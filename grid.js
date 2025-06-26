@@ -30,11 +30,16 @@ class Grid {
     draw() {
         for (const block of this.blocks) {
             const [sx, sy, sw, sh] = this.spritemapping[block.id];
-            const x = this.scale * block.x;
-            const y = this.scale * block.y;
-            const w = this.scale;
-            const h = this.scale;
-            this.ctx.drawImage(this.spritesheet, sx, sy, sw, sh, x, y, w, h);
+
+
+
+            const iso_x = (block.x - block.y) * sw * this.scale + this.offset;
+            const iso_y = (block.x + block.y) * sh * this.scale + this.offset;
+
+            const w = sw * this.scale;
+            const h = sh * this.scale;
+
+            this.ctx.drawImage(this.spritesheet, sx, sy, sw, sh, iso_x, iso_y, w, h);
         }
     }
 }
