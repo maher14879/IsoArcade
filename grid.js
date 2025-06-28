@@ -1,45 +1,168 @@
-class Block {
-    constructor(id, x, y, z) {
-        this.id = id;
-        this.x = x;
-        this.y = y;
-        this.z = z;
-    }
-}
-
 class Grid {
-    constructor(offset, scale, spritesheet, spritemapping) {
+    /**
+     * @param {string} id - The ID of the canvas element
+     * @param {number} offset - Tile vertical offset
+     * @param {number} scale - Scale factor for drawing
+     * @param {number} width - Texture tile width
+     * @param {number} height - Texture tile height
+     * @param {HTMLImageElement} texturesheet - The image containing all textures
+     * @param {Object<number, [number, number]>} textureMapping - Maps block ID to texture [sx, sy]
+     * @param {Object<number, boolean>} solidMapping - Maps block ID to solidity
+     * @param {Object<string, Object<number, [number, number]>>} shadowTextureMapping - Maps axis ('x', 'y', 'z') and light value to shadow texture coords
+     */
+    constructor(id, offset, scale, width, height, texturesheet, textureMapping, solidMapping, shadowTextureMapping) {
         this.offset = offset;
         this.scale = scale;
-        this.blocks = new Set();
-        this.canvas = document.getElementById('game');
+        this.width = width;
+        this.height = height;
+        this.canvas = document.getElementById(id);
         this.ctx = this.canvas.getContext('2d');
         this.ctx.imageSmoothingEnabled = false;
-        this.spritesheet = spritesheet;
-        this.spritemapping = spritemapping;
+        this.texturesheet = texturesheet;
+        this.textureMapping = textureMapping;
+        this.solidMapping = solidMapping;
+        this.shadowTextureMapping = shadowTextureMapping;
+        this.blocks = new Map(); // x → y → z → {id}
+        this.lightMap = new Map(); // x → y → z → [x, y, z]
+
+        //preset values
+        this.background = 'black';
+        this.lightFallOff = 4;
     }
 
-    add(block) {
-        this.blocks.add(block);
+    getBlock(x, y, z) {
+        return this.blocks.get(x)?.get(y)?.get(z);
     }
 
-    remove(block) {
-        this.blocks.delete(block);
+    setBlock(x, y, z, block) {
+        if (!this.blocks.has(x)) this.blocks.set(x, new Map());
+        const yMap = this.blocks.get(x);
+        if (!yMap.has(y)) yMap.set(y, new Map());
+        yMap.get(y).set(z, block);
+    }
+
+    deleteBlock(x, y, z) {
+        this.blocks.get(x)?.get(y)?.delete(z);
+    }
+
+    hasBlock(x, y, z) {
+        return !!this.getBlock(x, y, z);
+    }
+
+    addLight(x, y, z, value, axis) {
+        if (!this.lightMap.has(x)) this.lightMap.set(x, new Map());
+        const yMap = this.lightMap.get(x);
+        if (!yMap.has(y)) yMap.set(y, new Map());
+        const zMap = yMap.get(y);
+
+        const prev = zMap.get(z) || [0, 0, 0];
+        if (axis === 0) prev[0] += value;
+        else if (axis === 1) prev[1] += value;
+        else if (axis === 2) prev[2] += value;
+
+        zMap.set(z, prev);
+    }
+
+    getLight(x, y, z) {
+        return this.lightMap.get(x)?.get(y)?.get(z);
+    }
+
+    sortArry() {
+        this.blocksArr = [];
+        for (const [x, yMap] of this.blocks) {
+            for (const [y, zMap] of yMap) {
+                for (const [z, block] of zMap) {
+                    this.blocksArr.push([x, y, z, block]);
+                }
+            }
+        }
+
+        this.blocksArr.sort((a, b) => (a[2] - b[2]) || ((a[0] + a[1]) - (b[0] + b[1])));
     }
 
     draw() {
-        for (const block of this.blocks) {
-            const [sx, sy, sw, sh] = this.spritemapping[block.id];
+        this.ctx.fillStyle = this.background;
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
+        const [sw, sh] = [this.width, this.height];
+        const w = sw * this.scale;
+        const h = sh * this.scale;
+        const xFactor = (this.width / 2) * this.scale;
+        const yFactorZ = (this.height - 2 * this.offset) * this.scale;
+        const yFactor = this.offset * this.scale;
 
+        for (const [x, y, z, block] of this.blocksArr) {
+            const block_x = this.getBlock(x + 1, y, z);
+            const block_y = this.getBlock(x, y + 1, z);
+            const block_z = this.getBlock(x, y, z + 1);
+            if (block_x && this.solidMapping[block_x] && block_y && this.solidMapping[block_y] && block_z && this.solidMapping[block_z]) {
+                continue
+            };
 
-            const iso_x = (block.x - block.y) * sw * this.scale + this.offset;
-            const iso_y = (block.x + block.y) * sh * this.scale + this.offset;
+            const [sx, sy] = this.textureMapping[block];
 
-            const w = sw * this.scale;
-            const h = sh * this.scale;
+            const isoX = xFactor * (x - y);
+            const isoY = -z * yFactorZ + (x + y) * yFactor;
 
-            this.ctx.drawImage(this.spritesheet, sx, sy, sw, sh, iso_x, iso_y, w, h);
+            this.ctx.drawImage(this.texturesheet, sx, sy, sw, sh, isoX, isoY, w, h);
+
+            if (!this.solidMapping[block]) {continue};
+
+            const valuesXYZ = this.getLight(x, y, z) || [0, 0, 0];
+            for (let axis = 0; axis < 3; axis++) {
+                const lightMapSource = this.shadowTextureMapping[axis][Math.round(valuesXYZ[axis] / 2)];
+                if (lightMapSource) {
+                    const [lightMapX, lightMapY] = lightMapSource;
+                    this.ctx.drawImage(this.texturesheet, lightMapX, lightMapY, sw, sh, isoX, isoY, w, h);
+                };
+            }
+        }
+    }
+
+    lighten(startX, startY, startZ, lightStrength) {
+        const reversedDirections = [
+            [-1, 0, 0, 1], // x
+            [1, 0, 0, 0],  //-x
+            [0, -1, 0, 3], // y
+            [0, 1, 0, 2],  //-y
+            [0, 0, -1, 5],  // z
+            [0, 0, 1, 4]  //-z
+        ];
+
+        const reversedAxis = [
+            [-1, 0, 0, 0],
+            [0, -1, 0, 1],
+            [0, 0, -1, 2]
+        ];
+
+        const queue = [{ x: startX, y: startY, z: startZ, level: lightStrength, direction: null }];
+        const visited = new Set();
+
+        while (queue.length > 0) {
+            const { x, y, z, level, direction } = queue.shift();
+            const key = `${x},${y},${z}`;
+            if (visited.has(key) || level <= 0) {continue};
+            visited.add(key);
+
+            for (const [dx, dy, dz, axis] of reversedAxis) {
+                const block = this.getBlock(x + dx, y + dy, z + dz);
+                if (block !== undefined && this.solidMapping[block]) {
+                    this.addLight(x + dx, y + dy, z + dz, level, axis)
+                };
+            }
+
+            const block = this.getBlock(x, y, z);
+            if (block !== undefined && this.solidMapping[block]) continue;
+
+            for (const [dx, dy, dz, dir] of reversedDirections) {
+                queue.push({
+                    x: x + dx,
+                    y: y + dy,
+                    z: z + dz,
+                    level: dir == direction ? level - 1 : level - this.lightFallOff,
+                    direction: dir
+                });
+            }
         }
     }
 }
