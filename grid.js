@@ -24,10 +24,11 @@ class Grid {
         this.shadowTextureMapping = shadowTextureMapping;
         this.blocks = new Map(); // x → y → z → {id}
         this.lightMap = new Map(); // x → y → z → [x, y, z]
+        this.camera = [0, 0, 0];
 
         //preset values
         this.background = 'black';
-        this.lightFallOff = 4;
+        this.lightFallOff = 3;
     }
 
     getBlock(x, y, z) {
@@ -91,18 +92,21 @@ class Grid {
         const yFactorZ = (this.height - 2 * this.offset) * this.scale;
         const yFactor = this.offset * this.scale;
 
-        for (const [x, y, z, block] of this.blocksArr) {
+        for (const [originX, originY, originZ, block] of this.blocksArr) {
+            const x = originX - this.camera[0]
+            const y = originY - this.camera[1]
+            const z = originZ - this.camera[2]
             const block_x = this.getBlock(x + 1, y, z);
             const block_y = this.getBlock(x, y + 1, z);
             const block_z = this.getBlock(x, y, z + 1);
-            if (block_x && this.solidMapping[block_x] && block_y && this.solidMapping[block_y] && block_z && this.solidMapping[block_z]) {
-                continue
-            };
+            if (block_x && this.solidMapping[block_x] && block_y && this.solidMapping[block_y] && block_z && this.solidMapping[block_z]) {continue};
 
             const [sx, sy] = this.textureMapping[block];
 
-            const isoX = xFactor * (x - y);
-            const isoY = -z * yFactorZ + (x + y) * yFactor;
+            const isoX = xFactor * (x - y) + this.canvas.width / 2;
+            const isoY = -z * yFactorZ + (x + y) * yFactor + this.canvas.height / 2;
+
+            if (isoX + w < 0 || isoX > this.canvas.width || isoY + h < 0 || isoY > this.canvas.height) {continue};
 
             this.ctx.drawImage(this.texturesheet, sx, sy, sw, sh, isoX, isoY, w, h);
 
@@ -110,7 +114,7 @@ class Grid {
 
             const valuesXYZ = this.getLight(x, y, z) || [0, 0, 0];
             for (let axis = 0; axis < 3; axis++) {
-                const lightMapSource = this.shadowTextureMapping[axis][Math.round(valuesXYZ[axis] / 2)];
+                const lightMapSource = this.shadowTextureMapping[axis][Math.round(valuesXYZ[axis])];
                 if (lightMapSource) {
                     const [lightMapX, lightMapY] = lightMapSource;
                     this.ctx.drawImage(this.texturesheet, lightMapX, lightMapY, sw, sh, isoX, isoY, w, h);
@@ -120,13 +124,13 @@ class Grid {
     }
 
     lighten(startX, startY, startZ, lightStrength) {
-        const reversedDirections = [
-            [-1, 0, 0, 1], // x
-            [1, 0, 0, 0],  //-x
-            [0, -1, 0, 3], // y
-            [0, 1, 0, 2],  //-y
-            [0, 0, -1, 5],  // z
-            [0, 0, 1, 4]  //-z
+        const directions = [
+            [1, 0, 0, 0],  //x
+            [-1, 0, 0, 1], //-x
+            [0, 1, 0, 2],  //y
+            [0, -1, 0, 3], //-y
+            [0, 0, 1, 4],  //z
+            [0, 0, -1, 5], //-z
         ];
 
         const reversedAxis = [
@@ -135,7 +139,7 @@ class Grid {
             [0, 0, -1, 2]
         ];
 
-        const queue = [{ x: startX, y: startY, z: startZ, level: lightStrength, direction: null }];
+        const queue = [{ x: startX, y: startY, z: startZ, level: lightStrength, direction: 6 }];
         const visited = new Set();
 
         while (queue.length > 0) {
@@ -148,21 +152,30 @@ class Grid {
                 const block = this.getBlock(x + dx, y + dy, z + dz);
                 if (block !== undefined && this.solidMapping[block]) {
                     this.addLight(x + dx, y + dy, z + dz, level, axis)
+                    //this.setBlock(x, y, z, 3)
                 };
             }
 
             const block = this.getBlock(x, y, z);
             if (block !== undefined && this.solidMapping[block]) continue;
 
-            for (const [dx, dy, dz, dir] of reversedDirections) {
+            for (const [dx, dy, dz, dir] of directions) {
                 queue.push({
                     x: x + dx,
                     y: y + dy,
                     z: z + dz,
-                    level: dir == direction ? level - 1 : level - this.lightFallOff,
+                    level:  level - (dir == direction ? 1 : this.lightFallOff),
                     direction: dir
                 });
             }
         }
+    }
+}
+
+class Block {
+    constructor(teaxture, solid, lightlevel) {
+        this.teaxture
+        this.solid
+        this.lightlevel
     }
 }
