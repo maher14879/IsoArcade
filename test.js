@@ -63,7 +63,7 @@ class Grid {
         return this.lightMap.get(x)?.get(y)?.get(z) || [0, 0, 0, 0, 0, 0];
     }
 
-    getPosition(x, y, z) {
+    getIsometricPosition(x, y, z) {
         const worldX = x - this.camera[0];
         const worldY = y - this.camera[1];
         const worldZ = z - this.camera[2];
@@ -76,15 +76,27 @@ class Grid {
     }
 
     sortBlocks() {
+        const blockPlane = new Map();
+        const nonSolid = [];
         for (const [x, yMap] of this.blocks) {
             for (const [y, zMap] of yMap) {
                 for (const [z, block] of zMap) {
-                    this.blocksArray.push([x, y, z, block])
+                    if (!this.solidMapping[block]) {
+                        nonSolid.push([x, y, z, block, 0]); 
+                        continue;}
+                    const key = (y - x) + (z - x) * this.maxSize;
+                    const magnitude = x + y + z;
+                    if (!blockPlane.has(key) || magnitude > blockPlane.get(key)[4]) {
+                        blockPlane.set(key, [x, y, z, block, magnitude]);
+                    }
                 }
             }
-        };
+        }
+
+        this.blocksArray = Array.from(blockPlane.values()).concat(nonSolid);
         this.blocksArray.sort((a, b) => (a[2] - b[2]) || ((a[0] + a[1]) - (b[0] + b[1])));
     }
+
 
     draw() {
         const t0 = performance.now();
@@ -93,13 +105,14 @@ class Grid {
         this.ctx.fillStyle = this.background;
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
         this.sortBlocks();
+        const dtSort = (performance.now() - t0) / 1000;
 
         const w = this.width * this.scale;
         const h = this.height * this.scale;
 
-        for (const [x, y, z, block] of this.blocksArray) {
+        for (const [x, y, z, block, magnitude] of this.blocksArray) {
             const [sx, sy] = this.textureMapping[block];
-            const [isoX, isoY] = this.getPosition(x, y, z)
+            const [isoX, isoY] = this.getIsometricPosition(x, y, z)
 
             if (isoX + this.width * this.scale < 0 || isoY + this.height * this.scale < 0 || isoX > this.canvas.width || isoY > this.canvas.height) {continue};
 
@@ -132,11 +145,12 @@ class Grid {
         }
 
         if (this.diagnostics) {
-            const t1 = performance.now();
-            const dt = (t1 - t0) / 1000;
+            const dt = (performance.now() - t0) / 1000;
             const fps = (1 / dt).toFixed(2);
+            const sps = (1 / dtSort).toFixed(2);
             console.log("FPS:", fps);
             console.log("DrawCount:", drawCount);
+            console.log("SPS:", sps)
         }
     }
 
@@ -213,12 +227,13 @@ texturesheet.onload = () => {
     const grid = new Grid('game', 4, 4, 16, 16, texturesheet, textureMapping, solidMapping, shadowTextureMapping);
     grid.diagnostics = true;
 
-    for (let x = -100; x < 100; x++) {
-        for (let y = -100; y < 100; y++) {
-            grid.setBlock(x, y, 0, 0);
-            if (x == 0 && y == 0) {
-                grid.setBlock(x, y, 1, 1);
-                grid.setLight(x, y, 1, 16);
+    for (let x = -400; x <= 400; x++) {
+        for (let y = -400; y <= 400; y++) {
+            const z = Math.round(Math.sin((x + y) * 0.1) * 8);
+            grid.setBlock(x, y, z, 0);
+            if (x % 16 == 0 && y % 16 == 0) {
+                grid.setBlock(x, y, z+1, 1);
+                grid.setLight(x, y, z+1, 16);
             }
         }
     }
