@@ -16,32 +16,54 @@ class Grid {
         this.blocks = new Map();
         this.blocksArray = [];
         this.lightMap = new Map();
-        this.camera = [0, 0, 0];
+        this.camera = [0, 0];
         this.maxLight = 0;
         for (const [key, map] in shadowTextureMapping) {this.maxLight = Math.max(this.maxLight, key)};
 
         this.background = 'black';
         this.lightFallOff = 3;
         this.maxSize = 1000;
+        this.chunkSize = 4;
         this.diagnostics = false;
         this.axis = [0, 1, 2]
+        this.renderDistance = 3;
     }
 
     getBlock(x, y, z) {
-        return this.blocks.get(x)?.get(y)?.get(z)
+        const [cx, cy] = this.roundChunk(x, y)
+        return this.getChunk(cx, cy)?.get(x)?.get(y)?.get(z);
+    }
+
+    getChunk(cx, cy) {
+        return this.blocks.get(cx)?.get(cy);
+    }
+
+    roundChunk(x, y) {
+        const cx = x >> this.chunkSize;
+        const cy = y >> this.chunkSize;
+        return [cx, cy]
     }
 
     setBlock(x, y, z, block) {
-        if (!this.blocks.has(x)) this.blocks.set(x, new Map());
-        const yMap = this.blocks.get(x);
+        const [cx, cy] = this.roundChunk(x, y)
+        if (!this.blocks.has(cx)) this.blocks.set(cx, new Map());
+        const cyMap = this.blocks.get(cx);
+        if (!cyMap.has(cy)) cyMap.set(cy, new Map());
+        const chunk = cyMap.get(cy);
+
+        if (!chunk.has(x)) chunk.set(x, new Map());
+        const yMap = chunk.get(x);
         if (!yMap.has(y)) yMap.set(y, new Map());
         yMap.get(y).set(z, block);
     }
 
-    deleteBlock(x, y, z) {this.blocks.get(x)?.get(y)?.delete(z)}
+    deleteBlock(x, y, z) {
+        const [cx, cy] = this.roundChunk(x, y)
+        this.getChunk(cx, cy)?.get(x)?.get(y)?.delete(z);
+    }
 
     hasBlock(x, y, z) {
-        return !!this.getBlock(x, y, z)
+        return !!this.getBlock(x, y, z);
     }
 
     addLight(x, y, z, value, axis) {
@@ -66,7 +88,7 @@ class Grid {
     getIsometricPosition(x, y, z) {
         const worldX = x - this.camera[0];
         const worldY = y - this.camera[1];
-        const worldZ = z - this.camera[2];
+        const worldZ = z
 
         const xFactor = (this.width / 2) * this.scale;
         const yFactorZ = (this.height - 2 * this.offset) * this.scale;
@@ -76,45 +98,69 @@ class Grid {
     }
 
     sortBlocks() {
-        const blockPlane = new Map();
+        const startTime = performance.now();
+
+        const visibilityMap = Object.create(null);
         const nonSolid = [];
-        for (const [x, yMap] of this.blocks) {
-            for (const [y, zMap] of yMap) {
-                for (const [z, block] of zMap) {
-                    if (!this.solidMapping[block]) {
-                        nonSolid.push([x, y, z, block, 0]); 
-                        continue;}
-                    const key = (y - x) + (z - x) * this.maxSize;
-                    const magnitude = x + y + z;
-                    if (!blockPlane.has(key) || magnitude > blockPlane.get(key)[4]) {
-                        blockPlane.set(key, [x, y, z, block, magnitude]);
+
+        const canvasWidth = this.canvas.width;
+        const canvasHeight = this.canvas.height;
+        const scaleW = this.width * this.scale;
+        const scaleH = this.height * this.scale;
+
+        for (let dx = -this.renderDistance; dx <= this.renderDistance; dx++) {
+            for (let dy = -this.renderDistance; dy <= this.renderDistance; dy++) {
+                const [cx, cy] = this.roundChunk(this.camera[0] + dx * this.chunkSize**2, this.camera[1] + dy * this.chunkSize**2)
+                for (const [x, yMap] of this.getChunk(cx, cy)) {
+                    for (const [y, zMap] of yMap) {
+                        for (const [z, block] of zMap) {
+                            const [isoX, isoY] = this.getIsometricPosition(x, y, z);
+                            if (isoX + scaleW < 0 || isoY + scaleH < 0 || isoX > canvasWidth || isoY > canvasHeight) continue;
+
+                            const solid = this.solidMapping[block];
+                            if (!solid) {
+                                nonSolid.push([x, y, z, block, 0, isoX, isoY]);
+                                continue;
+                            }
+
+                            const key = (y - x) + (z - x) * this.maxSize;
+                            const magnitude = x + y + z;
+                            const existing = visibilityMap[key];
+                            if (!existing || magnitude > existing[4]) {
+                                visibilityMap[key] = [x, y, z, block, magnitude, isoX, isoY];
+                            }
+                        }
                     }
                 }
             }
         }
 
-        this.blocksArray = Array.from(blockPlane.values()).concat(nonSolid);
+        const sortStartTime = performance.now();
+
+        this.blocksArray = Object.values(visibilityMap).concat(nonSolid);
         this.blocksArray.sort((a, b) => (a[2] - b[2]) || ((a[0] + a[1]) - (b[0] + b[1])));
+
+        if (this.diagnostics) {
+            const filterTime = (sortStartTime - startTime).toFixed(2);
+            console.log("filterTIme:", filterTime);
+            const sortTime = (performance.now() - sortStartTime).toFixed(2);
+            console.log("sortTime:", sortTime);
+        }
     }
 
-
     draw() {
-        const t0 = performance.now();
+        const startTime = performance.now();
+        this.sortBlocks();
+        const drawStartTime = performance.now();
         let drawCount = 0;
-
         this.ctx.fillStyle = this.background;
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-        this.sortBlocks();
-        const dtSort = (performance.now() - t0) / 1000;
 
         const w = this.width * this.scale;
         const h = this.height * this.scale;
 
-        for (const [x, y, z, block, magnitude] of this.blocksArray) {
+        for (const [x, y, z, block, magnitude, isoX, isoY] of this.blocksArray) {
             const [sx, sy] = this.textureMapping[block];
-            const [isoX, isoY] = this.getIsometricPosition(x, y, z)
-
-            if (isoX + this.width * this.scale < 0 || isoY + this.height * this.scale < 0 || isoX > this.canvas.width || isoY > this.canvas.height) {continue};
 
             if (this.solidMapping[block]) {
                 this.ctx.drawImage(this.texturesheet, sx, sy, this.width, this.height, isoX, isoY, w, h);
@@ -135,7 +181,7 @@ class Grid {
 
                 const values = this.getLight(x, y, z);
                 const brightness = Math.min(Math.max(...values) / this.maxLight, 1);
-                if (brightness >= 1) {
+                if (brightness <= 1) {
                     this.ctx.filter = `brightness(${brightness})`;
                     this.ctx.drawImage(this.texturesheet, sx, sy, this.width, this.height, isoX, isoY, w, h);
                     this.ctx.filter = 'none';
@@ -145,12 +191,11 @@ class Grid {
         }
 
         if (this.diagnostics) {
-            const dt = (performance.now() - t0) / 1000;
-            const fps = (1 / dt).toFixed(2);
-            const sps = (1 / dtSort).toFixed(2);
-            console.log("FPS:", fps);
+            const drawTime = (performance.now() - drawStartTime).toFixed(2);
+            const fps = (1000 / (performance.now() - startTime)).toFixed(2);
+            console.log("fps:", fps);
+            console.log("drawTime:", drawTime);
             console.log("DrawCount:", drawCount);
-            console.log("SPS:", sps)
         }
     }
 
@@ -227,9 +272,12 @@ texturesheet.onload = () => {
     const grid = new Grid('game', 4, 4, 16, 16, texturesheet, textureMapping, solidMapping, shadowTextureMapping);
     grid.diagnostics = true;
 
+    const startTime = performance.now();
+
     for (let x = -400; x <= 400; x++) {
         for (let y = -400; y <= 400; y++) {
             const z = Math.round(Math.sin((x + y) * 0.1) * 8);
+            grid.setLight(x, y, z+1, 3);
             grid.setBlock(x, y, z, 0);
             if (x % 16 == 0 && y % 16 == 0) {
                 grid.setBlock(x, y, z+1, 1);
@@ -238,15 +286,27 @@ texturesheet.onload = () => {
         }
     }
 
+    const buildTime = (performance.now() - startTime).toFixed(2)
+
+    console.log("buildTime:", buildTime);
+
     function moveCamera(e) {
         const speed = 0.1;
-        switch (e.key) {
-            case 'w': grid.camera[1] -= speed; break;
-            case 's': grid.camera[1] += speed; break;
-            case 'a': grid.camera[0] -= speed; break;
-            case 'd': grid.camera[0] += speed; break;
-            case 'q': grid.camera[2] -= speed; break;
-            case 'e': grid.camera[2] += speed; break;
+        if (e.key == 'w') {
+            grid.camera[0] -= speed;
+            grid.camera[1] -= speed;
+        }
+        if (e.key == 's') {
+            grid.camera[0] += speed;
+            grid.camera[1] += speed;
+        }
+        if (e.key == 'a') {
+            grid.camera[0] -= speed;
+            grid.camera[1] += speed;
+        }
+        if (e.key == 'd') {
+            grid.camera[0] += speed;
+            grid.camera[1] -= speed;
         }
         scheduleDraw();
     }
@@ -263,5 +323,4 @@ texturesheet.onload = () => {
     }
 
     window.addEventListener("keydown", moveCamera);
-    grid.draw();
 };

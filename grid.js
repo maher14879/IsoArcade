@@ -31,24 +31,53 @@ class Grid {
         this.lightFallOff = 3;
     }
 
+    getChunk(cx, cy, cz) {
+        return this.chunks.get(cx)?.get(cy)?.get(cz);
+    }
+
     getBlock(x, y, z) {
-        return this.blocks.get(x)?.get(y)?.get(z);
+        const cx = x >> this.chunkSize;
+        const cy = y >> this.chunkSize;
+        const cz = z >> this.chunkSize;
+        return this.getChunk(cx, cy, cz)?.get(x)?.get(y)?.get(z);
     }
 
     setBlock(x, y, z, block) {
-        if (!this.blocks.has(x)) this.blocks.set(x, new Map());
-        const yMap = this.blocks.get(x);
+        const cx = x >> this.chunkSize;
+        const cy = y >> this.chunkSize;
+        const cz = z >> this.chunkSize;
+
+        if (!this.chunks.has(cx)) this.chunks.set(cx, new Map());
+        const cxMap = this.chunks.get(cx);
+        if (!cxMap.has(cy)) cxMap.set(cy, new Map());
+        const cyMap = cxMap.get(cy);
+        if (!cyMap.has(cz)) cyMap.set(cz, new Map());
+        const chunk = cyMap.get(cz);
+
+        if (!chunk.has(x)) chunk.set(x, new Map());
+        const yMap = chunk.get(x);
         if (!yMap.has(y)) yMap.set(y, new Map());
         yMap.get(y).set(z, block);
+
+        // Also update main structure if needed
+        if (!this.blocks.has(x)) this.blocks.set(x, new Map());
+        const mainYMap = this.blocks.get(x);
+        if (!mainYMap.has(y)) mainYMap.set(y, new Map());
+        mainYMap.get(y).set(z, block);
     }
 
     deleteBlock(x, y, z) {
+        const cx = x >> this.chunkSize;
+        const cy = y >> this.chunkSize;
+        const cz = z >> this.chunkSize;
+        this.getChunk(cx, cy, cz)?.get(x)?.get(y)?.delete(z);
         this.blocks.get(x)?.get(y)?.delete(z);
     }
 
     hasBlock(x, y, z) {
         return !!this.getBlock(x, y, z);
     }
+
 
     addLight(x, y, z, value, axis) {
         if (!this.lightMap.has(x)) this.lightMap.set(x, new Map());
