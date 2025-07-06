@@ -18,20 +18,33 @@ class Grid {
         this.lightMap = new Map();
         this.camera = [0, 0];
         this.maxLight = 0;
-        for (const [key, map] in shadowTextureMapping) {this.maxLight = Math.max(this.maxLight, key)};
+
+        for (const [key, map] of Object.entries(shadowTextureMapping)) {
+            this.maxLight = Math.max(this.maxLight, Number(key));
+        }
 
         this.background = 'black';
-        this.lightFallOff = 3;
+        this.lightFallOff = 2;
         this.maxSize = 1000;
         this.chunkSize = 4;
         this.diagnostics = false;
-        this.axis = [0, 1, 2]
+        this.axis = [0, 1, 2];
         this.renderDistance = 3;
+        this.sunLight = 3;
+        this.worldHeight = 10
+    }
+
+    lerp(a, b, dt) {
+        return b + (a-b) * Math.exp(-this.decay * dt)
     }
 
     getBlock(x, y, z) {
         const [cx, cy] = this.roundChunk(x, y)
         return this.getChunk(cx, cy)?.get(x)?.get(y)?.get(z);
+    }
+
+    hasChunk(cx, cy) {
+        return this.getChunk(cx, cy) !== undefined;
     }
 
     getChunk(cx, cy) {
@@ -63,7 +76,13 @@ class Grid {
     }
 
     hasBlock(x, y, z) {
-        return !!this.getBlock(x, y, z);
+        return this.getBlock(x, y, z) !== undefined;
+    }
+
+    getSkyLight(x, y) {
+        const [cx, cy] = this.roundChunk(x, y);
+        const pillar = this.getChunk(cx, cy)?.get(x)?.get(y);
+        return Math.max(...pillar.keys());
     }
 
     addLight(x, y, z, value, axis) {
@@ -107,10 +126,11 @@ class Grid {
         const canvasHeight = this.canvas.height;
         const scaleW = this.width * this.scale;
         const scaleH = this.height * this.scale;
+        const size = this.chunkSize**2
 
-        for (let dx = -this.renderDistance; dx <= this.renderDistance; dx++) {
-            for (let dy = -this.renderDistance; dy <= this.renderDistance; dy++) {
-                const [cx, cy] = this.roundChunk(this.camera[0] + dx * this.chunkSize**2, this.camera[1] + dy * this.chunkSize**2)
+        const [cxCam, cyCam] = this.roundChunk(this.camera[0], this.camera[1])
+        for (let cx = -this.renderDistance + cxCam; cx <= this.renderDistance + cxCam; cx++) {
+            for (let cy = -this.renderDistance + cyCam; cy <= this.renderDistance + cyCam; cy++) {
                 for (const [x, yMap] of this.getChunk(cx, cy)) {
                     for (const [y, zMap] of yMap) {
                         for (const [z, block] of zMap) {
@@ -199,7 +219,7 @@ class Grid {
         }
     }
 
-    setLight(startX, startY, startZ, lightStrength) {
+    setLight(startX, startY, startZ, lightStrength, direction) {
         const directions = [
             [-1, 0, 0, 0],
             [0, -1, 0, 1],
@@ -209,32 +229,92 @@ class Grid {
             [0, 0, 1, 5]
         ];
 
-        const queue = [{ x: startX, y: startY, z: startZ, level: lightStrength, direction: 6 }];
+        const queue = [{ x: startX, y: startY, z: startZ, level: lightStrength, direction: direction || 6 }];
         const visited = new Set();
 
         while (queue.length > 0) {
             const { x, y, z, level, direction } = queue.shift();
-            if (level <= 0) continue;
-
             const key = x + y * this.maxSize + z * this.maxSize * this.maxSize;
             if (visited.has(key)) continue;
             visited.add(key);
 
             for (const [dx, dy, dz, axis] of directions) {
-                const nx = x + dx, ny = y + dy, nz = z + dz;
-                if (!this.hasBlock(nx, ny, nz) || !this.solidMapping[this.getBlock(nx, ny, nz)]) {
-                    this.addLight(nx, ny, nz, level, axis);
+                if (this.hasBlock(x + dx, y + dy, z + dz)) {
+                    this.addLight(x + dx, y + dy, z + dz, level, axis);
                 }
             }
 
             for (const [dx, dy, dz, dir] of directions) {
                 const nx = x + dx, ny = y + dy, nz = z + dz;
                 const newLevel = level - (dir === direction ? 1 : this.lightFallOff);
-                if (newLevel > 0) {
+                if ((newLevel > 0) && (!this.hasBlock(nx, ny, nz) || !this.solidMapping[this.getBlock(nx, ny, nz)])) {
                     queue.push({ x: nx, y: ny, z: nz, level: newLevel, direction: dir });
                 }
             }
         }
+    }
+
+    chunkLight(cx, cy) {
+        const size = this.chunkSize**2;
+        for (let dx = 0; dx < size; dx++) {
+            for (let dy = 0; dy < size; dy++) {
+                const z = this.getSkyLight(dx + cx * size, dy + cy * size);
+                this.setLight(dx + cx * size, dy + cy * size, z + 1, this.sunLight, -2);
+            }
+        }
+    }
+
+    updateChunks() {
+        const size = this.chunkSize**2;
+        const [cxCam, cyCam] = this.roundChunk(this.camera[0], this.camera[1]);
+        for (let cx = -this.renderDistance + cxCam; cx <= this.renderDistance + cxCam; cx++) {
+            for (let cy = -this.renderDistance + cyCam; cy <= this.renderDistance + cyCam; cy++) {
+                if (!this.hasChunk(cx, cy)) {
+                    const startTime = performance.now();
+                    this.createChunk(cx, cy);
+                    this.chunkLight(cx, cy);
+                    const chunkCreationTime = (performance.now() - startTime).toFixed(2);
+                    console.log("Creating chunk", cx, cy, "took:", chunkCreationTime);
+                }
+                const z = this.getSkyLight(cx * size, cy * size)
+                if (!(this.getBlock(cx * size, cy * size, z) == 1) && false) {
+                    this.setBlock(cx * size, cy * size, z + 1, 1)
+                    this.setLight(cx * size, cy * size, z + 1, 16)
+                }
+
+                for (const [x, yMap] of this.getChunk(cx, cy)) {
+                    for (const [y, zMap] of yMap) {
+                        for (const [z, block] of zMap) {
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    noise(x, y) {
+        let h = 0;
+        for (let i = this.worldHeight; i >= this.worldHeight; i--) {
+            h += Math.abs(i * (Math.sin(x * (1/i)) + Math.cos(y * (1/i))));
+            };
+        return Math.round(Math.min(h, this.worldHeight))
+    }
+
+    createChunk(cx, cy) {
+        const size = this.chunkSize**2;
+        for (let dx = 0; dx < size; dx++) {
+            for (let dy = 0; dy < size; dy++) {
+                const h = Math.max(this.noise(dx + cx * size, dy + cy * size), 1);
+                for (let z = 0; z < h; z++) {
+                    this.setBlock(dx + cx * size, dy + cy * size, z, 4);
+                }
+                if (h == this.worldHeight) {this.setBlock(dx + cx * size, dy + cy * size, h, 6)};     
+            }
+        }
+    }
+
+    saveWorld() {
+
     }
 }
 
@@ -272,24 +352,6 @@ texturesheet.onload = () => {
     const grid = new Grid('game', 4, 4, 16, 16, texturesheet, textureMapping, solidMapping, shadowTextureMapping);
     grid.diagnostics = true;
 
-    const startTime = performance.now();
-
-    for (let x = -400; x <= 400; x++) {
-        for (let y = -400; y <= 400; y++) {
-            const z = Math.round(Math.sin((x + y) * 0.1) * 8);
-            grid.setLight(x, y, z+1, 3);
-            grid.setBlock(x, y, z, 0);
-            if (x % 16 == 0 && y % 16 == 0) {
-                grid.setBlock(x, y, z+1, 1);
-                grid.setLight(x, y, z+1, 16);
-            }
-        }
-    }
-
-    const buildTime = (performance.now() - startTime).toFixed(2)
-
-    console.log("buildTime:", buildTime);
-
     function moveCamera(e) {
         const speed = 0.1;
         if (e.key == 'w') {
@@ -316,7 +378,9 @@ texturesheet.onload = () => {
         if (!needsRedraw) {
             needsRedraw = true;
             requestAnimationFrame(() => {
-                grid.draw();
+                console.clear()
+                grid.updateChunks();
+                grid.draw()
                 needsRedraw = false;
             });
         }
