@@ -1,5 +1,5 @@
 class Grid {
-    constructor(id, offset, scale, width, height, textureSheet, textureArray, solidArray) {
+    constructor(id, offset, scale, width, height, textureSheet, textureMapping, shadowTextureSheet, shadowTextureMapping, solidMapping) {
         this.offset = offset;
         this.scale = scale;
         this.width = width;
@@ -7,22 +7,23 @@ class Grid {
         this.canvas = document.getElementById(id);
         this.ctx = this.canvas.getContext('2d');
         this.ctx.imageSmoothingEnabled = false;
-        
-        this.offscreenCanvas = document.createElement('canvas');
-        this.offscreenCanvas.width = width;
-        this.offscreenCanvas.height = height;
-        this.offCtx = this.offscreenCanvas.getContext('2d', { willReadFrequently: true });
 
         this.textureSheet = textureSheet;
-        this.textureArray = textureArray;
+        this.textureMapping = textureMapping;
+        this.shadowTextureSheet = shadowTextureSheet;
+        this.shadowTextureMapping = shadowTextureMapping;
 
-        this.solidArray = solidArray;
+        this.solidMapping = solidMapping;
 
-        this.blocksMap = new Map();
+        this.blocks = new Map();
+        this.blocksArray = [];
         this.lightMap = new Map();
-        this.chunkLoadState = new Map();
         this.camera = [0, 0];
-        this.maxLight = 16;
+        this.maxLight = 0;
+
+        for (const [key, map] of Object.entries(shadowTextureMapping)) {
+            this.maxLight = Math.max(this.maxLight, Number(key));
+        }
 
         this.background = 'black';
         this.lightFallOff = 2;
@@ -33,15 +34,6 @@ class Grid {
         this.renderDistance = 3;
         this.sunLight = 4;
         this.worldHeight = 10
-    }
-
-    getChunkLoadState(cx, cy) {
-        return this.chunkLoadState.get(cx)?.get(cy) ?? 0;
-    }
-
-    SetChunkLoadState(cx, cy, state) {
-        if (!this.chunkLoadState.has(cx)) this.chunkLoadState.set(cx, new Map());
-        this.chunkLoadState.get(cx).set(cy, state);
     }
 
     lerp(a, b, dt) {
@@ -58,7 +50,7 @@ class Grid {
     }
 
     getChunk(cx, cy) {
-        return this.blocksMap.get(cx)?.get(cy);
+        return this.blocks.get(cx)?.get(cy);
     }
 
     roundChunk(x, y) {
@@ -69,8 +61,8 @@ class Grid {
 
     setBlock(x, y, z, block) {
         const [cx, cy] = this.roundChunk(x, y)
-        if (!this.blocksMap.has(cx)) this.blocksMap.set(cx, new Map());
-        const cyMap = this.blocksMap.get(cx);
+        if (!this.blocks.has(cx)) this.blocks.set(cx, new Map());
+        const cyMap = this.blocks.get(cx);
         if (!cyMap.has(cy)) cyMap.set(cy, new Map());
         const chunk = cyMap.get(cy);
 
@@ -140,6 +132,7 @@ class Grid {
         const canvasHeight = this.canvas.height;
         const scaleW = this.width * this.scale;
         const scaleH = this.height * this.scale;
+        const size = this.chunkSize**2
 
         const [cxCam, cyCam] = this.roundChunk(this.camera[0], this.camera[1])
         for (let cx = -this.renderDistance + cxCam; cx <= this.renderDistance + cxCam; cx++) {
@@ -150,17 +143,17 @@ class Grid {
                             const [isoX, isoY] = this.getIsometricPosition(x, y, z);
                             if (isoX + scaleW < 0 || isoY + scaleH < 0 || isoX > canvasWidth || isoY > canvasHeight) continue;
 
-                            const solid = this.solidArray[block];
-                            if (solid == 1) {
-                                const key = (y - x) + (z - x) * this.maxSize;
-                                const magnitude = x + y + z;
-                                const existing = visibilityMap[key];
-                                if (!existing || magnitude > existing[4]) {
-                                    visibilityMap[key] = [x, y, z, block, magnitude, isoX, isoY];
-                                }
-                            } else {
+                            const solid = this.solidMapping[block];
+                            if (solid < 1) {
                                 nonSolid.push([x, y, z, block, 0, isoX, isoY]);
                                 continue;
+                            }
+
+                            const key = (y - x) + (z - x) * this.maxSize;
+                            const magnitude = x + y + z;
+                            const existing = visibilityMap[key];
+                            if (!existing || magnitude > existing[4]) {
+                                visibilityMap[key] = [x, y, z, block, magnitude, isoX, isoY];
                             }
                         }
                     }
@@ -170,8 +163,8 @@ class Grid {
 
         const sortStartTime = performance.now();
 
-        const blocksArray = Object.values(visibilityMap).concat(nonSolid);
-        blocksArray.sort((a, b) => (a[2] - b[2]) || ((a[0] + a[1]) - (b[0] + b[1])));
+        this.blocksArray = Object.values(visibilityMap).concat(nonSolid);
+        this.blocksArray.sort((a, b) => (a[2] - b[2]) || ((a[0] + a[1]) - (b[0] + b[1])));
 
         if (this.diagnostics) {
             const filterTime = (sortStartTime - startTime).toFixed(2);
@@ -179,70 +172,47 @@ class Grid {
             const sortTime = (performance.now() - sortStartTime).toFixed(2);
             console.log("sortTime:", sortTime);
         }
-
-        return blocksArray
-    }
-
-    applyBrightness(imageData, brightness) {
-        const data = imageData.data;
-        for (let i = 0; i < data.length; i += 4) {
-            data[i] *= brightness;
-            data[i + 1] *= brightness;
-            data[i + 2] *= brightness;
-        }
-        return imageData;
     }
 
     draw() {
         const startTime = performance.now();
-        const blocksArray = this.sortBlocks();
+        this.sortBlocks();
         const drawStartTime = performance.now();
         let drawCount = 0;
-
         this.ctx.fillStyle = this.background;
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
-        const w = this.width;
-        const h = this.height;
-        const wScaled = w * this.scale;
-        const hScaled = h * this.scale;
+        const w = this.width * this.scale;
+        const h = this.height * this.scale;
 
-        for (const [x, y, z, block, magnitude, isoX, isoY] of blocksArray) {
-            if (this.solidArray[block] == 1) {
-                const texture = this.textureArray[block];
-                const brightnessValues = this.getLight(x, y, z);
+        for (const [x, y, z, block, magnitude, isoX, isoY] of this.blocksArray) {
+            const [sx, sy] = this.textureMapping[block];
+
+            if (this.solidMapping[block] == 1) {
+                this.ctx.drawImage(this.textureSheet, sx, sy, this.width, this.height, isoX, isoY, w, h);
+                if (this.diagnostics) drawCount++;
+
+                const valuesXYZ = this.getLight(x, y, z);
                 for (const axis of this.axis) {
-                    const [ix, iy] = texture[axis];
-                    const sx = ix * w;
-                    const sy = iy * h;
-                    
-                    this.offCtx.clearRect(0, 0, w, h);
-                    this.offCtx.drawImage(this.textureSheet, sx, sy, w, h, 0, 0, w, h);
-                    
-                    const imageData = this.offCtx.getImageData(0, 0, w, h);
-                    const brightness = Math.min(brightnessValues[axis] / this.maxLight, 1);
-                    const adjustedData = this.applyBrightness(imageData, brightness);
-                    
-                    this.offCtx.putImageData(adjustedData, 0, 0);
-                    this.ctx.drawImage(this.offscreenCanvas, 0, 0, w, h, isoX, isoY, wScaled, hScaled);
-                    drawCount++;
+                    const tex = this.shadowTextureMapping[axis][Math.round(valuesXYZ[axis])];
+                    if (tex) {
+                        const [sx, sy] = tex;
+                        this.ctx.drawImage(this.shadowTextureSheet, sx, sy, this.width, this.height, isoX, isoY, w, h);
+                        if (this.diagnostics) drawCount++;
+                    }
                 }
             } else {
-                const [ix, iy] = this.textureArray[block];
-                const sx = ix * w;
-                const sy = iy * h;
+                this.ctx.drawImage(this.textureSheet, sx, sy, this.width, this.height, isoX, isoY, w, h);
+                if (this.diagnostics) drawCount++;
+
                 const values = this.getLight(x, y, z);
                 const brightness = Math.min(Math.max(...values) / this.maxLight, 1);
-                
-                this.offCtx.clearRect(0, 0, w, h);
-                this.offCtx.drawImage(this.textureSheet, sx, sy, w, h, 0, 0, w, h);
-                
-                const imageData = this.offCtx.getImageData(0, 0, w, h);
-                const adjustedData = this.applyBrightness(imageData, brightness);
-                
-                this.offCtx.putImageData(adjustedData, 0, 0);
-                this.ctx.drawImage(this.offscreenCanvas, 0, 0, w, h, isoX, isoY, wScaled, hScaled);
-                drawCount++;
+                if (brightness <= 1) {
+                    this.ctx.filter = `brightness(${brightness})`;
+                    this.ctx.drawImage(this.textureSheet, sx, sy, this.width, this.height, isoX, isoY, w, h);
+                    this.ctx.filter = 'none';
+                    if (this.diagnostics) drawCount++;
+                }
             }
         }
 
@@ -281,7 +251,7 @@ class Grid {
             }
 
             for (const [dx, dy, dz, dir] of directions) {
-                const shadowness = this.hasBlock(x + dx, y + dy, z + dz) ? 1 - this.solidArray[this.getBlock(x + dx, y + dy, z + dz)] : 1;
+                const shadowness = this.hasBlock(x + dx, y + dy, x + dz) ? 1 - this.solidMapping[this.getBlock(x + dx, y + dy, z + dz)] : 1;
                 const newLightStrength = Math.round((lightStrength - (dir == axis ? 1 : this.lightFallOff)) * shadowness);
                 if (newLightStrength > 0) {
                     queue.push({ x: x + dx, y: y + dy, z: z + dz, lightStrength: newLightStrength, axis: dir });
@@ -298,60 +268,34 @@ class Grid {
                 this.setLight(dx + cx * size, dy + cy * size, z + 1, this.sunLight);
             }
         }
-        this.SetChunkLoadState(cx, cy, 2)
-    }
-
-    loadChunk(cx, cy) {
-        const startTime = performance.now();
-        this.createChunk(cx, cy);
-        this.chunkLight(cx, cy);
-        this.SetChunkLoadState(cx, cy, 1)
-        const chunkCreationTime = (performance.now() - startTime).toFixed(2);
-        console.log("Creating chunk", cx, cy, "took:", chunkCreationTime);
     }
 
     updateChunks() {
         const [cxCam, cyCam] = this.roundChunk(this.camera[0], this.camera[1]);
-        for (let cx = -this.renderDistance + cxCam - 1; cx <= this.renderDistance + cxCam + 1; cx++) {
-            for (let cy = -this.renderDistance + cyCam - 1; cy <= this.renderDistance + cyCam + 1; cy++) {
-                if (this.getChunkLoadState(cx, cy) == 0) {
-                    this.loadChunk(cx, cy)
-                }
-            }
-        }
-
         for (let cx = -this.renderDistance + cxCam; cx <= this.renderDistance + cxCam; cx++) {
             for (let cy = -this.renderDistance + cyCam; cy <= this.renderDistance + cyCam; cy++) {
-                if (this.getChunkLoadState(cx, cy) == 1) {
-                    const neighborsLoaded = (
-                        (this.getChunkLoadState(cx+1, cy) > 0) &&
-                        (this.getChunkLoadState(cx-1, cy) > 0) &&
-                        (this.getChunkLoadState(cx, cy+1) > 0) &&
-                        (this.getChunkLoadState(cx, cy-1) > 0) &&
-                        (this.getChunkLoadState(cx-1, cy-1) > 0) &&
-                        (this.getChunkLoadState(cx+1, cy+1) > 0) &&
-                        (this.getChunkLoadState(cx-1, cy+1) > 0) &&
-                        (this.getChunkLoadState(cx+1, cy-1) > 0)
-                    );
+                if (!this.hasChunk(cx, cy)) {
+                    const startTime = performance.now();
+                    this.createChunk(cx, cy);
+                    const chunkCreationTime = (performance.now() - startTime).toFixed(2);
+                    console.log("Creating chunk", cx, cy, "took:", chunkCreationTime);
 
-                    if (neighborsLoaded) {
-                        this.chunkLight(cx, cy);
+                    //const z = this.getSkyLight(cx * size, cy * size)
+                    //this.setBlock(cx * size, cy * size, z + 1, 1)
+                    //this.setLight(cx * size, cy * size, z + 1, 16)
+                }
 
-                        //tests
-                        const size = this.chunkSize**2;
-                        const z = this.getSkyLight(cx * size, cy * size);
-                        if (!(z == this.worldHeight)) continue;
-                        this.setBlock(cx * size, cy * size, z + 1, 6);
-                        this.setLight(cx * size, cy * size, z + 1, 16);
-                    }
-                };
                 for (const [x, yMap] of this.getChunk(cx, cy)) {
                     for (const [y, zMap] of yMap) {
                         for (const [z, block] of zMap) {
-
                         }
                     }
                 }
+            }
+        }
+        for (let cx = -this.renderDistance + cxCam + 1; cx <= this.renderDistance + cxCam - 1; cx++) {
+            for (let cy = -this.renderDistance + cyCam + 1; cy <= this.renderDistance + cyCam - 1; cy++) {
+                this.chunkLight(cx, cy);
             }
         }
     }
@@ -368,12 +312,11 @@ class Grid {
         const size = this.chunkSize**2;
         for (let dx = 0; dx < size; dx++) {
             for (let dy = 0; dy < size; dy++) {
-                this.setBlock(dx + cx * size, dy + cy * size, 1, 1);
                 const h = Math.max(this.noise(dx + cx * size, dy + cy * size), 1);
                 for (let z = 0; z < h; z++) {
-                    this.setBlock(dx + cx * size, dy + cy * size, z, 3);
+                    this.setBlock(dx + cx * size, dy + cy * size, z, 4);
                 }
-                if (h == this.worldHeight) {this.setBlock(dx + cx * size, dy + cy * size, h, 2)};     
+                if (h == this.worldHeight) {this.setBlock(dx + cx * size, dy + cy * size, h, 6)};     
             }
         }
     }
@@ -396,30 +339,42 @@ canvas.id = 'game';
 document.body.appendChild(canvas);
 
 const textureSheet = new Image();
-textureSheet.crossOrigin = 'anonymous';
-textureSheet.src = 'assets/texture_sheet.png';
+const shadowTextureSheet = new Image();
+shadowTextureSheet.src = 'assets/shadowTextureSheet.png';
+textureSheet.src = 'assets/textureSheet.png';
 textureSheet.onload = () => {
-    const textureArray = [
-        [0, 0], 
-        [0, 1],
-        [[1, 2], [1,1], [1,0]], 
-        [[1, 5], [1,4], [1,3]], 
-        [[2, 2], [2,1], [2,0]], 
-        [[2, 5], [2,4], [2,3]], 
-        [0, 2],
-    ];
+    const textureMapping = {
+        0: [0, 48], 1: [0, 32], 2: [16, 32], 3: [0, 16],
+        4: [0, 64], 5: [0, 80], 6: [0, 96], 7: [0, 112],
+    };
 
-    const solidArray = [
-        0.6,
-        0.8,
-        1,
-        1,
-        1,
-        1,
-        0,
-    ];
+    const shadowTextureMapping = {
+        0: {
+            0: [32, 0],   1: [32, 16],  2: [32, 32],  3: [32, 48],
+            4: [32, 64],  5: [32, 80],  6: [32, 96],  7: [32, 112],
+            8: [96, 0],   9: [96, 16], 10: [96, 32], 11: [96, 48],
+            12: [96, 64], 13: [96, 80], 14: [96, 96], 15: [96, 112]
+        },
+        1: {
+            0: [16, 0],   1: [16, 16],  2: [16, 32],  3: [16, 48],
+            4: [16, 64],  5: [16, 80],  6: [16, 96],  7: [16, 112],
+            8: [80, 0],   9: [80, 16], 10: [80, 32], 11: [80, 48],
+            12: [80, 64], 13: [80, 80], 14: [80, 96], 15: [80, 112]
+        },
+        2: {
+            0: [0, 0],    1: [0, 16],   2: [0, 32],   3: [0, 48],
+            4: [0, 64],   5: [0, 80],   6: [0, 96],   7: [0, 112],
+            8: [64, 0],   9: [64, 16], 10: [64, 32], 11: [64, 48],
+            12: [64, 64], 13: [64, 80], 14: [64, 96], 15: [64, 112]
+        }
+    };
 
-    const grid = new Grid('game', 4, 4, 16, 16, textureSheet, textureArray, solidArray);
+    const solidMapping = {
+        0: 1, 1: 0, 2: 0, 3: 0,
+        4: 1, 5: 1, 6: 1, 7: 1,
+    };
+
+    const grid = new Grid('game', 4, 4, 16, 16, textureSheet, textureMapping, shadowTextureSheet, shadowTextureMapping, solidMapping);
     grid.diagnostics = true;
 
     function moveCamera(e) {
