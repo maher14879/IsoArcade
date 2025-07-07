@@ -7,11 +7,6 @@ class Grid {
         this.canvas = document.getElementById(id);
         this.ctx = this.canvas.getContext('2d');
         this.ctx.imageSmoothingEnabled = false;
-        
-        this.offscreenCanvas = document.createElement('canvas');
-        this.offscreenCanvas.width = width;
-        this.offscreenCanvas.height = height;
-        this.offCtx = this.offscreenCanvas.getContext('2d', { willReadFrequently: true });
 
         this.textureSheet = textureSheet;
         this.textureArray = textureArray;
@@ -21,9 +16,10 @@ class Grid {
         this.blocksMap = new Map();
         this.lightMap = new Map();
         this.chunkLoadState = new Map();
+        this.brightnessMap = new Map()
         this.camera = [0, 0];
-        this.maxLight = 16;
 
+        this.maxLight = 16;
         this.background = 'black';
         this.lightFallOff = 2;
         this.maxSize = 1000;
@@ -31,8 +27,45 @@ class Grid {
         this.diagnostics = false;
         this.axis = [0, 1, 2];
         this.renderDistance = 3;
-        this.sunLight = 4;
-        this.worldHeight = 10
+        this.sunLight = 2;
+        this.worldHeight = 10;
+
+        this.createBrightnessMap()
+    }
+
+    createBrightnessMap() {
+        const canvas = document.createElement('canvas');
+        canvas.width = this.textureSheet.width;
+        canvas.height = this.textureSheet.height;
+        const ctx = canvas.getContext('2d');
+        
+        ctx.drawImage(this.textureSheet, 0, 0);
+        const originalData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        
+        for (let i = 0; i <= this.maxLight; i++) {
+            const brightness = i / this.maxLight;
+            const imageData = new ImageData(
+                new Uint8ClampedArray(originalData.data), 
+                originalData.width, 
+                originalData.height
+            );
+            
+            this.applyBrightness(imageData, brightness);
+            ctx.putImageData(imageData, 0, 0);
+            
+            const img = new Image();
+            img.src = canvas.toDataURL();
+            this.brightnessMap[i] = img;
+        }
+    }
+
+    applyBrightness(imageData, brightness) {
+        const data = imageData.data;
+        for (let i = 0; i < data.length; i += 4) {
+            data[i] *= brightness;
+            data[i + 1] *= brightness;
+            data[i + 2] *= brightness;
+        }
     }
 
     getChunkLoadState(cx, cy) {
@@ -183,16 +216,6 @@ class Grid {
         return blocksArray
     }
 
-    applyBrightness(imageData, brightness) {
-        const data = imageData.data;
-        for (let i = 0; i < data.length; i += 4) {
-            data[i] *= brightness;
-            data[i + 1] *= brightness;
-            data[i + 2] *= brightness;
-        }
-        return imageData;
-    }
-
     draw() {
         const startTime = performance.now();
         const blocksArray = this.sortBlocks();
@@ -214,34 +237,18 @@ class Grid {
                 for (const axis of this.axis) {
                     const [ix, iy] = texture[axis];
                     const sx = ix * w;
-                    const sy = iy * h;
-                    
-                    this.offCtx.clearRect(0, 0, w, h);
-                    this.offCtx.drawImage(this.textureSheet, sx, sy, w, h, 0, 0, w, h);
-                    
-                    const imageData = this.offCtx.getImageData(0, 0, w, h);
-                    const brightness = Math.min(brightnessValues[axis] / this.maxLight, 1);
-                    const adjustedData = this.applyBrightness(imageData, brightness);
-                    
-                    this.offCtx.putImageData(adjustedData, 0, 0);
-                    this.ctx.drawImage(this.offscreenCanvas, 0, 0, w, h, isoX, isoY, wScaled, hScaled);
+                    const sy = iy * h; 
+                    const brightness = Math.min(brightnessValues[axis], this.maxLight);
+                    this.ctx.drawImage(this.brightnessMap[brightness], sx, sy, w, h, isoX, isoY, wScaled, hScaled);
                     drawCount++;
                 }
             } else {
                 const [ix, iy] = this.textureArray[block];
                 const sx = ix * w;
                 const sy = iy * h;
-                const values = this.getLight(x, y, z);
-                const brightness = Math.min(Math.max(...values) / this.maxLight, 1);
-                
-                this.offCtx.clearRect(0, 0, w, h);
-                this.offCtx.drawImage(this.textureSheet, sx, sy, w, h, 0, 0, w, h);
-                
-                const imageData = this.offCtx.getImageData(0, 0, w, h);
-                const adjustedData = this.applyBrightness(imageData, brightness);
-                
-                this.offCtx.putImageData(adjustedData, 0, 0);
-                this.ctx.drawImage(this.offscreenCanvas, 0, 0, w, h, isoX, isoY, wScaled, hScaled);
+                const brightnessValues = this.getLight(x, y, z);
+                const brightness = Math.min(Math.max(...brightnessValues), this.maxLight);
+                this.ctx.drawImage(this.brightnessMap[brightness], sx, sy, w, h, isoX, isoY, wScaled, hScaled);
                 drawCount++;
             }
         }
