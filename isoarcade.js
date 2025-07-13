@@ -10,20 +10,20 @@ class IsoArcade {
         // Data storage
         this.spriteCount = 0;
         this.blocksMap = new Map();
+        this.lightMap = new Map();
         this.chunkLoadState = new Map();
-        this.brightnessMap = new Map();
         this.camera = [0, 0];
 
         // Preset values
         this.maxLight = 16;
-        this.sunLight = 5;
-        this.background = 'black';
+        this.sunLight = 4;
         this.attenuation = 2;
-        this.chunkSize = 4;
+        this.fogScale = 100;
+        this.chunkSize = 4; //root of actual size
         this.diagnostics = false;
         this.axis = [0, 1, 2];
-        this.renderDistance = 4;
-        this.worldHeight = 10;
+        this.renderDistance = 8;
+        this.worldHeight = 15;
 
         // WebGPU
         this.adapter = null;
@@ -39,7 +39,6 @@ class IsoArcade {
         this.canvas = document.getElementById(id);
         if (!this.canvas) throw new Error('Canvas not found');
         
-        // Set canvas size
         this.canvas.width = this.canvas.clientWidth;
         this.canvas.height = this.canvas.clientHeight;
 
@@ -54,7 +53,7 @@ class IsoArcade {
         this.context.configure({
             device: this.device,
             format: this.format,
-            alphaMode: 'premultiplied' // Important for transparency
+            alphaMode: 'premultiplied'
         });
 
         // Quad geometry (two triangles forming a quad)
@@ -92,48 +91,17 @@ class IsoArcade {
 
         this.setCapacity(initialCapacity);
 
-        // Create pipeline
+        const shaderResponse = await fetch('/shaders/vertex.wgsl');
+        const shaderCode = await shaderResponse.text();
+
+        const fragmentResponse = await fetch('/shaders/fragment.wgsl');
+        const fragmentCode = await fragmentResponse.text();
+
         this.pipeline = this.device.createRenderPipeline({
             layout: 'auto',
             vertex: {
                 module: this.device.createShaderModule({
-                    code: `
-                    struct Uniforms {
-                        canvasSize: vec2f,
-                        textureSize: vec2f
-                    };
-
-                    @group(0) @binding(2) var<uniform> uniforms: Uniforms;
-
-                    struct VertexInput {
-                        @location(0) position: vec2f,
-                        @location(1) uv: vec2f,
-                        @location(2) instanceScreenPos: vec2f,
-                        @location(3) instanceTexPos: vec2f,
-                        @location(4) instanceSize: vec2f
-                    };
-
-                    struct VertexOutput {
-                        @builtin(position) position: vec4f,
-                        @location(0) uv: vec2f
-                    };
-
-                    @vertex
-                    fn main(input: VertexInput) -> VertexOutput {
-                        var output: VertexOutput;
-                        
-                        // Convert to clip space
-                        let pixelPos = input.position * input.instanceSize + input.instanceScreenPos;
-                        var clipPos = (pixelPos / uniforms.canvasSize) * 2.0 - 1.0;
-                        clipPos.y = -clipPos.y; // Flip Y axis
-                        
-                        output.position = vec4f(clipPos, 0.0, 1.0);
-                        
-                        // Calculate texture coordinates
-                        output.uv = input.uv * input.instanceSize / uniforms.textureSize + input.instanceTexPos;
-                        return output;
-                    }
-                    `
+                    code: shaderCode
                 }),
                 entryPoint: 'main',
                 buffers: [
@@ -145,27 +113,21 @@ class IsoArcade {
                         ]
                     },
                     {
-                        arrayStride: 6 * 4,
+                        arrayStride: 8 * 4,
                         stepMode: 'instance',
                         attributes: [
-                            { format: 'float32x2', offset: 0, shaderLocation: 2 }, // screenPos
-                            { format: 'float32x2', offset: 8, shaderLocation: 3 }, // texPos
-                            { format: 'float32x2', offset: 16, shaderLocation: 4 } // size
+                            { format: 'float32x2', offset: 0,  shaderLocation: 2 },
+                            { format: 'float32x2', offset: 8,  shaderLocation: 3 },
+                            { format: 'float32x2', offset: 16, shaderLocation: 4 },
+                            { format: 'float32',   offset: 24, shaderLocation: 5 },
+                            { format: 'float32',   offset: 28, shaderLocation: 6 }
                         ]
                     }
                 ]
             },
             fragment: {
                 module: this.device.createShaderModule({
-                    code: `
-                    @group(0) @binding(0) var tex: texture_2d<f32>;
-                    @group(0) @binding(1) var samp: sampler;
-
-                    @fragment
-                    fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
-                        return textureSample(tex, samp, uv);
-                    }
-                    `
+                    code: fragmentCode
                 }),
                 entryPoint: 'main',
                 targets: [{
@@ -202,9 +164,8 @@ class IsoArcade {
         if (newCapacity <= this.maxSprites) return;
 
         this.maxSprites = newCapacity;
-        this.spriteData = new Float32Array(newCapacity * 6);
+        this.spriteData = new Float32Array(newCapacity * 8);
         
-        // Initialize instance buffer if it doesn't exist
         if (!this.instanceBuffer) {
             this.instanceBuffer = this.device.createBuffer({
                 size: this.spriteData.byteLength,
@@ -212,7 +173,6 @@ class IsoArcade {
                 mappedAtCreation: false
             });
         } else {
-            // Create new larger buffer
             const oldBuffer = this.instanceBuffer;
             this.instanceBuffer = this.device.createBuffer({
                 size: this.spriteData.byteLength,
@@ -231,11 +191,9 @@ class IsoArcade {
         }
 
         this.texture = this.device.createTexture({
-            size: [imageBitmap.width, imageBitmap.height],
+            size: [imageBitmap.width, imageBitmap.height, 1],
             format: 'rgba8unorm',
-            usage: GPUTextureUsage.TEXTURE_BINDING | 
-                   GPUTextureUsage.COPY_DST | 
-                   GPUTextureUsage.RENDER_ATTACHMENT
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
         });
 
         this.device.queue.copyExternalImageToTexture(
@@ -243,15 +201,12 @@ class IsoArcade {
             { texture: this.texture },
             [imageBitmap.width, imageBitmap.height]
         );
-
-        // Update uniform buffer
         const uniformData = new Float32Array([
             this.canvas.width, this.canvas.height,
             imageBitmap.width, imageBitmap.height
         ]);
         this.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
 
-        // Create bind group
         this.bindGroup = this.device.createBindGroup({
             layout: this.pipeline.getBindGroupLayout(0),
             entries: [
@@ -262,18 +217,20 @@ class IsoArcade {
         });
     }
 
-    drawImage(x, y, sx, sy) {
+    drawImage(x, y, sx, sy, brightness, distance) {
         if (this.spriteCount >= this.maxSprites) {
             this.setCapacity(Math.floor(this.maxSprites * 1.5));
         }
 
-        const offset = this.spriteCount * 6;
-        this.spriteData[offset + 0] = x; // screenX
-        this.spriteData[offset + 1] = y; // screenY
-        this.spriteData[offset + 2] = sx; // texX
-        this.spriteData[offset + 3] = sy; // texY
-        this.spriteData[offset + 4] = this.width; // width
-        this.spriteData[offset + 5] = this.height; // height
+        const offset = this.spriteCount * 8;
+        this.spriteData[offset + 0] = x;
+        this.spriteData[offset + 1] = y;
+        this.spriteData[offset + 2] = sx;
+        this.spriteData[offset + 3] = sy;
+        this.spriteData[offset + 4] = this.width;
+        this.spriteData[offset + 5] = this.height;
+        this.spriteData[offset + 6] = brightness;
+        this.spriteData[offset + 7] = distance;
         this.spriteCount++;
     }
 
@@ -285,7 +242,7 @@ class IsoArcade {
             0,
             this.spriteData.buffer,
             0,
-            this.spriteCount * 6 * 4
+            this.spriteCount * 8 * 4
         );
 
         const encoder = this.device.createCommandEncoder();
@@ -308,7 +265,6 @@ class IsoArcade {
         pass.end();
         this.device.queue.submit([encoder.finish()]);
     }
-
 
     getChunkLoadState(cx, cy) {
         return this.chunkLoadState.get(cx)?.get(cy) ?? 0;
@@ -370,6 +326,35 @@ class IsoArcade {
         return Math.max(...pillar.keys());
     }
 
+    addLight(x, y, z, value, axis) {
+        const [cx, cy] = this.roundChunk(x, y);
+        if (!this.lightMap.has(cx)) this.lightMap.set(cx, new Map());
+        const cyMap = this.lightMap.get(cx);
+        if (!cyMap.has(cy)) cyMap.set(cy, new Map());
+        const chunk = cyMap.get(cy);
+
+        if (!chunk.has(x)) chunk.set(x, new Map());
+        const yMap = chunk.get(x);
+        if (!yMap.has(y)) yMap.set(y, new Map());
+        const zMap = yMap.get(y);
+        if (!zMap.has(z)) zMap.set(z, [0, 0, 0, 0, 0, 0]);
+
+        const prev = zMap.get(z);
+        const updated = [...prev];
+        updated[axis] += value;
+        zMap.set(z, updated);
+    }
+
+    hasLight(x, y, z) {
+        const [cx, cy] = this.roundChunk(x, y);
+        return !!this.lightMap.get(cx)?.get(cy)?.get(x)?.get(y)?.get(z);
+    }
+
+    getLight(x, y, z) {
+        const [cx, cy] = this.roundChunk(x, y);
+        return this.lightMap.get(cx)?.get(cy)?.get(x)?.get(y)?.get(z);
+    }
+
     getIsometricPosition(x, y, z) {
         const worldX = x - this.camera[0];
         const worldY = y - this.camera[1];
@@ -401,15 +386,15 @@ class IsoArcade {
                         for (const [z, block] of zMap) {
                             const [isoX, isoY] = this.getIsometricPosition(x, y, z);
                             if (isoX + width < 0 || isoY + height < 0 || isoX > canvasWidth || isoY > canvasHeight) continue;
+                            const magnitude = x + y + z;
                             if (this.solidArray[block] == 10) {
                                 const key = `${y - x},${z - x}`;
-                                const magnitude = x + y + z;
                                 const existing = visibilityMap[key];
                                 if (!existing || magnitude > existing[4]) {
                                     visibilityMap[key] = [x, y, z, block, magnitude, isoX, isoY];
                                 }
                             } else {
-                                nonSolid.push([x, y, z, block, 0, isoX, isoY]);
+                                nonSolid.push([x, y, z, block, magnitude, isoX, isoY]);
                                 continue;
                             }
                         }
@@ -438,21 +423,18 @@ class IsoArcade {
         const clearPass = encoder.beginRenderPass({
             colorAttachments: [{
                 view: this.context.getCurrentTexture().createView(),
-                clearValue: [0, 0, 0, 1],  // RGBA black
+                clearValue: [0, 0, 0, 1],
                 loadOp: 'clear',
                 storeOp: 'store'
             }]
         });
         clearPass.end();
         this.device.queue.submit([encoder.finish()]);
-
-        // Reset sprite counter
         this.spriteCount = 0;
 
     }
 
     draw() {
-        const startTime = performance.now();
         const blocksArray = this.sortBlocks();
         const drawStartTime = performance.now();
 
@@ -461,22 +443,27 @@ class IsoArcade {
         let drawCount = 0;
         const w = this.width;
         const h = this.height;
+        const [camX, camY] = this.camera
 
         for (const [x, y, z, block, magnitude, isoX, isoY] of blocksArray) {
+            const brightnessValues = this.getLight(x, y, z) ?? [0,0,0,0,0,0];
+            const fog = Math.min(1, Math.abs(x - camX + y - camY) / this.fogScale)**2
             if (this.solidArray[block] == 10) {
                 const texture = this.textureArray[block];
                 for (const axis of this.axis) {
                     const [ix, iy] = texture[axis];
                     const sx = ix * w / this.texture.width;
-                    const sy = iy * h / this.texture.height; 
-                    this.drawImage(isoX, isoY, sx, sy);
+                    const sy = iy * h / this.texture.height;
+                    const brightness = Math.max(0, Math.min(brightnessValues[axis], this.maxLight)) / this.maxLight;
+                    this.drawImage(isoX, isoY, sx, sy, brightness, fog);
                     drawCount++;
                 }
             } else {
                 const [ix, iy] = this.textureArray[block];
                 const sx = ix * w / this.texture.width;
                 const sy = iy * h / this.texture.height;
-                this.drawImage(isoX, isoY, sx, sy);
+                const brightness = Math.max(0, Math.min(Math.max(...brightnessValues), this.maxLight)) / this.maxLight;
+                this.drawImage(isoX, isoY, sx, sy, brightness, fog);
                 drawCount++;
             }
         }
@@ -485,14 +472,12 @@ class IsoArcade {
 
         if (this.diagnostics) {
             const drawTime = (performance.now() - drawStartTime).toFixed(2);
-            const fps = (1000 / (performance.now() - startTime)).toFixed(2);
-            console.log("fps:", fps);
             console.log("drawTime:", drawTime);
             console.log("DrawCount:", drawCount);
         }
     }
 
-    loadChunk(cx, cy) {
+    async loadChunk(cx, cy) {
         const startTime = performance.now();
         this.createChunk(cx, cy);
         this.SetChunkLoadState(cx, cy, 1)
@@ -501,6 +486,7 @@ class IsoArcade {
     }
 
     updateChunks() {
+        const startTime = performance.now();
         const [cxCam, cyCam] = this.roundChunk(this.camera[0], this.camera[1]);
         for (let cx = -this.renderDistance + cxCam - 1; cx <= this.renderDistance + cxCam + 1; cx++) {
             for (let cy = -this.renderDistance + cyCam - 1; cy <= this.renderDistance + cyCam + 1; cy++) {
@@ -523,6 +509,18 @@ class IsoArcade {
                         (this.getChunkLoadState(cx-1, cy+1) > 0) &&
                         (this.getChunkLoadState(cx+1, cy-1) > 0)
                     );
+
+                    if (neighborsLoaded) {
+                        this.chunkLight(cx, cy);
+
+                        //tests
+                        const size = this.chunkSize**2;
+                        const z = this.getSkyLight(cx * size, cy * size);
+                        if (this.getBlock(cx * size, cy * size, z) == 2) {
+                        this.setBlock(cx * size, cy * size, z + 1, 6);
+                        this.setLight(cx * size, cy * size, z + 1, 16, 6);
+                        }
+                    }
                 };
                 for (const [x, yMap] of this.getChunk(cx, cy)) {
                     for (const [y, zMap] of yMap) {
@@ -533,6 +531,52 @@ class IsoArcade {
                 }
             }
         }
+        const updateChunksTime = (performance.now() - startTime).toFixed(2);
+        console.log("Update chunks took:", updateChunksTime);
+    }
+
+    async setLight(startX, startY, startZ, lightStrength, axis) {
+        const directions = [
+            [-1, 0, 0, 0],
+            [0, -1, 0, 1],
+            [0, 0, -1, 2],
+            [1, 0, 0,  3],
+            [0, 1, 0,  4],
+            [0, 0, 1,  5]
+        ];
+
+        const queue = [{ x: startX, y: startY, z: startZ, lightStrength: lightStrength, axis: axis}];
+        const visited = new Set();
+
+        while (queue.length > 0) {
+            const { x, y, z, lightStrength, axis } = queue.shift();
+            const key = `${x},${y},${z}`;
+            if (visited.has(key)) continue;
+            visited.add(key);
+
+            for (const [dx, dy, dz, dir] of directions) {
+                const [nx, ny, nz] = [x + dx, y + dy, z + dz]
+                if (this.hasBlock(nx, ny, nz)) {
+                    this.addLight(nx, ny, nz, lightStrength, dir);
+                    continue;
+                }
+                const newLightStrength = Math.round((lightStrength - ((dir == axis) ? 1 : this.attenuation )));
+                if (newLightStrength > 0) {
+                    queue.push({ x: nx, y: ny, z: nz, lightStrength: newLightStrength, axis: dir });
+                }
+            }
+        }
+    }
+
+    chunkLight(cx, cy) {
+        const size = this.chunkSize**2;
+        for (let dx = 0; dx < size; dx++) {
+            for (let dy = 0; dy < size; dy++) {
+                const z = this.getSkyLight(dx + cx * size, dy + cy * size);
+                this.setLight(dx + cx * size, dy + cy * size, z + 1, this.sunLight, -1);
+            }
+        }
+        this.SetChunkLoadState(cx, cy, 2)
     }
 
     noise(x, y, amplitude) {
@@ -654,14 +698,20 @@ function moveCamera(e) {
 }
 
 let needsRedraw = false;
+let lastFrameTime = null;
 function scheduleDraw() {
     if (!needsRedraw) {
         needsRedraw = true;
         requestAnimationFrame(() => {
-            console.clear()
+            console.clear();
+            lastFrameTime = performance.now();
+
             arcade.updateChunks();
-            arcade.draw()
+            arcade.draw();
             needsRedraw = false;
+
+            const delta = performance.now() - lastFrameTime;
+            console.log("fps:", (1000 / delta).toFixed(2));
         });
     }
 }

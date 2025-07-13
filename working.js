@@ -243,7 +243,7 @@ class Grid {
                     const [ix, iy] = texture[axis]; //need to change when flip
                     const sx = ix * w;
                     const sy = iy * h; 
-                    const brightness = Math.round(Math.max(0, Math.min(brightnessValues[axis] + z * heightBrightness, this.maxLight)));
+                    const brightness = Math.max(0, Math.min(brightnessValues[axis] + z * heightBrightness, this.maxLight)) / this.maxLight;
                     this.ctx.drawImage(this.brightnessMap[brightness], sx, sy, w, h, isoX, isoY, wScaled, hScaled);
                     drawCount++;
                 }
@@ -251,7 +251,7 @@ class Grid {
                 const [ix, iy] = this.textureArray[block];
                 const sx = ix * w;
                 const sy = iy * h;
-                const brightness = Math.round(Math.max(0, Math.min(Math.max(...brightnessValues) + z * heightBrightness, this.maxLight)));
+                const brightness = Math.max(0, Math.min(Math.max(...brightnessValues) + z * heightBrightness, this.maxLight)) / this.maxLight;
                 this.ctx.drawImage(this.brightnessMap[brightness], sx, sy, w, h, isoX, isoY, wScaled, hScaled);
                 drawCount++;
             }
