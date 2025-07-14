@@ -16,14 +16,14 @@ class IsoArcade {
 
         // Preset values
         this.maxLight = 16;
-        this.sunLight = 4;
+        this.sunLight = 3;
         this.attenuation = 2;
         this.fogScale = 100;
         this.chunkSize = 4; //root of actual size
         this.diagnostics = false;
         this.axis = [0, 1, 2];
-        this.renderDistance = 8;
-        this.worldHeight = 15;
+        this.renderDistance = 5;
+        this.worldHeight = 20;
 
         // WebGPU
         this.adapter = null;
@@ -275,10 +275,6 @@ class IsoArcade {
         this.chunkLoadState.get(cx).set(cy, state);
     }
 
-    lerp(a, b, dt) {
-        return b + (a-b) * Math.exp(-this.decay * dt)
-    }
-
     getBlock(x, y, z) {
         const [cx, cy] = this.roundChunk(x, y)
         return this.getChunk(cx, cy)?.get(x)?.get(y)?.get(z);
@@ -337,7 +333,7 @@ class IsoArcade {
         const yMap = chunk.get(x);
         if (!yMap.has(y)) yMap.set(y, new Map());
         const zMap = yMap.get(y);
-        if (!zMap.has(z)) zMap.set(z, [0, 0, 0, 0, 0, 0]);
+        if (!zMap.has(z)) zMap.set(z, [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]);
 
         const prev = zMap.get(z);
         const updated = [...prev];
@@ -385,7 +381,7 @@ class IsoArcade {
                     for (const [y, zMap] of yMap) {
                         for (const [z, block] of zMap) {
                             const [isoX, isoY] = this.getIsometricPosition(x, y, z);
-                            if (isoX + width < 0 || isoY + height < 0 || isoX > canvasWidth || isoY > canvasHeight) continue;
+                            if (isoX + width < 0 || isoY + height < 0 || isoX - width > canvasWidth || isoY - height > canvasHeight) continue;
                             const magnitude = x + y + z;
                             if (this.solidArray[block] == 10) {
                                 const key = `${y - x},${z - x}`;
@@ -481,8 +477,10 @@ class IsoArcade {
         const startTime = performance.now();
         this.createChunk(cx, cy);
         this.SetChunkLoadState(cx, cy, 1)
-        const chunkCreationTime = (performance.now() - startTime).toFixed(2);
-        console.log("Creating chunk", cx, cy, "took:", chunkCreationTime);
+        if (this.diagnostics) {
+            const chunkCreationTime = (performance.now() - startTime).toFixed(2);
+            console.log("Creating chunk", cx, cy, "took:", chunkCreationTime);
+        }
     }
 
     updateChunks() {
@@ -531,18 +529,20 @@ class IsoArcade {
                 }
             }
         }
-        const updateChunksTime = (performance.now() - startTime).toFixed(2);
-        console.log("Update chunks took:", updateChunksTime);
+        if (self.diagnostics) {
+            const updateChunksTime = (performance.now() - startTime).toFixed(2);
+            console.log("Update chunks took:", updateChunksTime);
+        }
     }
 
-    async setLight(startX, startY, startZ, lightStrength, axis) {
+    setLight(startX, startY, startZ, lightStrength, axis) {
         const directions = [
             [-1, 0, 0, 0],
             [0, -1, 0, 1],
             [0, 0, -1, 2],
-            [1, 0, 0,  3],
-            [0, 1, 0,  4],
-            [0, 0, 1,  5]
+            [1, 0, 0, 3],
+            [0, 1, 0, 4],
+            [0, 0, 1, 5]
         ];
 
         const queue = [{ x: startX, y: startY, z: startZ, lightStrength: lightStrength, axis: axis}];
@@ -555,20 +555,20 @@ class IsoArcade {
             visited.add(key);
 
             for (const [dx, dy, dz, dir] of directions) {
-                const [nx, ny, nz] = [x + dx, y + dy, z + dz]
-                if (this.hasBlock(nx, ny, nz)) {
-                    this.addLight(nx, ny, nz, lightStrength, dir);
-                    continue;
-                }
-                const newLightStrength = Math.round((lightStrength - ((dir == axis) ? 1 : this.attenuation )));
+                const [nx, ny, nz] = [x + dx, y + dy, z + dz];
+                const hasBlock = this.hasBlock(nx, ny, nz);
+                if (hasBlock) {this.addLight(nx, ny, nz, lightStrength, dir)};
+
+                const transparency = 1 - ((hasBlock ? this.solidArray[this.getBlock(nx, ny, nz)] : 0) / 100)
+                const newLightStrength = (lightStrength - ((dir == axis) ? 1 : this.attenuation )) * transparency;
                 if (newLightStrength > 0) {
-                    queue.push({ x: nx, y: ny, z: nz, lightStrength: newLightStrength, axis: dir });
+                    queue.push({ x: nx, y: ny, z: nz, lightStrength: newLightStrength, axis: dir })
                 }
             }
         }
     }
 
-    chunkLight(cx, cy) {
+    async chunkLight(cx, cy) {
         const size = this.chunkSize**2;
         for (let dx = 0; dx < size; dx++) {
             for (let dy = 0; dy < size; dy++) {
@@ -579,7 +579,7 @@ class IsoArcade {
         this.SetChunkLoadState(cx, cy, 2)
     }
 
-    noise(x, y, amplitude) {
+    noise(x, y) {
         let h = 0;
         const octaves = 9;
         const scale = 0.04;
@@ -590,7 +590,7 @@ class IsoArcade {
             const amp = Math.pow(persistence, i);
             h += amp * (Math.sin(x * scale * freq) + Math.cos(y * scale * freq));
         }
-        return Math.round(Math.exp(h) * amplitude);
+        return Math.exp(h);
     }
 
     createTree(x, y, z) {
@@ -630,7 +630,7 @@ class IsoArcade {
                 this.setBlock(x, y, 1, 3);// Dirt
                 this.setBlock(x, y, 2, 1);// water
                 
-                let h = Math.max(this.noise(x, y, 1), 1);
+                let h = Math.max(Math.round(this.noise(x, y)), 1);
                 
                 const mountainThreshold = this.worldHeight * 0.6;
                 if (h > mountainThreshold) {
@@ -655,65 +655,77 @@ class IsoArcade {
     }
 }
 
-// Usage:
 const textureSheet = new Image();
 textureSheet.crossOrigin = 'anonymous';
 textureSheet.src = 'assets/texture_sheet.png';
 
 const textureArray = [
-    [0, 0],
-    [0, 1], 
-    [[1, 2], [1,1], [1,0]], 
-    [[1, 5], [1,4], [1,3]], 
-    [[2, 2], [2,1], [2,0]], 
-    [[2, 5], [2,4], [2,3]], 
-    [0, 2]
+    [0, 0], //leaves
+    [0, 1], //water
+    [[1, 2], [1,1], [1,0]], //grass
+    [[1, 5], [1,4], [1,3]], //dirt
+    [[2, 2], [2,1], [2,0]], //wood
+    [[2, 5], [2,4], [2,3]], //stone
+    [0, 2] //torch
 ];
 
-const solidArray = [6, 8, 10, 10, 10, 10, 0];
+const solidArray = [2, 8, 10, 10, 10, 10, 0];
 const arcade = new IsoArcade(4, 16, 16, textureArray, solidArray);
-arcade.diagnostics = true
+arcade.diagnostics = false
 await arcade.init("game");
 await arcade.setTexture(textureSheet);
 
-function moveCamera(e) {
-    const speed = 1;
-    if (e.key == 'w') {
-        arcade.camera[0] -= speed;
-        arcade.camera[1] -= speed;
+const centerX = arcade.canvas.width / 2;
+const centerY = arcade.canvas.height / 2;
+
+const speed = 0.05;
+
+let keyW = false;
+let keyS = false;
+let keyA = false;
+let keyD = false;
+
+window.addEventListener("keydown", (e) => {
+    if (e.key === 'w') keyW = true;
+    if (e.key === 's') keyS = true;
+    if (e.key === 'a') keyA = true;
+    if (e.key === 'd') keyD = true;
+});
+
+window.addEventListener("keyup", (e) => {
+    if (e.key === 'w') keyW = false;
+    if (e.key === 's') keyS = false;
+    if (e.key === 'a') keyA = false;
+    if (e.key === 'd') keyD = false;
+});
+
+function gameLoop(timestamp) {
+    const dt = timestamp - (gameLoop.lastTime || timestamp)
+
+    let dx = 0, dy = 0;
+    if (keyW) { dx += -1; dy += -1; }
+    if (keyS) { dx += 1; dy += 1; }
+    if (keyA) { dx += -1; dy += 1; }
+    if (keyD) { dx += 1; dy += -1; }
+
+    if (dx !== 0 || dy !== 0) {
+        const len = Math.hypot(dx, dy);
+        dx /= len;
+        dy /= len;
+        arcade.camera[0] += dx * speed * dt;
+        arcade.camera[1] += dy * speed * dt;
     }
-    if (e.key == 's') {
-        arcade.camera[0] += speed;
-        arcade.camera[1] += speed;
+
+    arcade.updateChunks();
+    arcade.draw();
+    gameLoop.lastTime = timestamp;
+
+    if (arcade.diagnostics) {
+        const fps = (1000 / dt).toFixed(2);
+        console.log("fps:", fps);
     }
-    if (e.key == 'a') {
-        arcade.camera[0] -= speed;
-        arcade.camera[1] += speed;
-    }
-    if (e.key == 'd') {
-        arcade.camera[0] += speed;
-        arcade.camera[1] -= speed;
-    }
-    scheduleDraw();
+
+    requestAnimationFrame(gameLoop);
 }
 
-let needsRedraw = false;
-let lastFrameTime = null;
-function scheduleDraw() {
-    if (!needsRedraw) {
-        needsRedraw = true;
-        requestAnimationFrame(() => {
-            console.clear();
-            lastFrameTime = performance.now();
-
-            arcade.updateChunks();
-            arcade.draw();
-            needsRedraw = false;
-
-            const delta = performance.now() - lastFrameTime;
-            console.log("fps:", (1000 / delta).toFixed(2));
-        });
-    }
-}
-
-window.addEventListener("keydown", moveCamera);
+requestAnimationFrame(gameLoop);
