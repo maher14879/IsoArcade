@@ -9,13 +9,14 @@ class IsoArcade {
 
         // Preset values
         this.maxLight = 16;
-        this.sunLuminosity = 4;
+        this.sunLuminosity = 3;
+        this.sunSelfLuminosity = 5;
         this.sunAxis = -3;
-        this.attenuation = 2.5;
+        this.attenuation = 2;
         this.fogScale = 200;
         this.chunkSize = 4; //root of actual size
         this.diagnostics = false;
-        this.axis = [1, 2, 3];
+        this.axis = {x: 1, y: 2, z: 3}
         this.renderDistance = 7;
         this.worldHeight = 30;
         this.minLight = 3
@@ -327,6 +328,17 @@ class IsoArcade {
     deleteBlock(x, y, z) {
         const [cx, cy] = this.roundChunk(x, y)
         this.getChunk(cx, cy)?.get(x)?.get(y)?.delete(z);
+        const sources = this.lightSourceMap.get(cx)?.get(cy);
+        if (!sources) return;
+
+        for (let i = 0; i < sources.length; i++) {
+            const [lx, ly, lz, luminosity, axis] = sources[i];
+            if (lx === x && ly === y && lz === z) {
+                sources.splice(i, 1);
+                this.propagateLight(x, y, z, luminosity, axis, true)
+                break;
+            }
+        }
     }
 
     hasBlock(x, y, z) {
@@ -403,7 +415,7 @@ class IsoArcade {
     async sortBlocks() {
         const startTime = performance.now();
 
-        const visibilityMap = new Map(); // Faster than object with string keys
+        const visibilityMap = new Map();
         const nonSolid = [];
 
         const canvasWidth = this.canvas.width;
@@ -422,6 +434,10 @@ class IsoArcade {
         const canvasBorderX = w * this.CameraSpeed / this.tickPerSecond
         const canvasBorderY = h * this.CameraSpeed / this.tickPerSecond
 
+        const xAxis = Math.sign(this.axis.x)
+        const yAxis = Math.sign(this.axis.y)
+        const zAxis = Math.sign(this.axis.z)
+
         const xFactor = w / 2;
         const yFactorZ = h - 2 * this.offset;
         const yFactor = this.offset;
@@ -436,16 +452,17 @@ class IsoArcade {
                 for (const [x, yMap] of chunk) {
                     for (const [y, zMap] of yMap) {
                         for (const [z, block] of zMap) {
-                            const worldX = x - camX;
-                            const worldY = y - camY;
+                            const worldX = (x - camX) * xAxis;
+                            const worldY = (y - camY) * yAxis;
+                            const worldZ = (z) * zAxis;
                             const isoX = Math.ceil(xFactor * (worldX - worldY) + camHalfWidth);
-                            const isoY = Math.ceil(-z * yFactorZ + (worldX + worldY) * yFactor + camHalfHeight);
+                            const isoY = Math.ceil(-worldZ * yFactorZ + (worldX + worldY) * yFactor + camHalfHeight);
 
                             if (isoX + canvasBorderX < 0 || isoY + canvasBorderY < 0 || isoX - canvasBorderX > canvasWidth || isoY - canvasBorderY > canvasHeight) continue;
 
-                            const magnitude = x + y + z;
-                            const dy = y - x;
-                            const dz = z - x;
+                            const magnitude = worldX + worldY + worldZ;
+                            const dy = worldY - worldX;
+                            const dz = worldZ - worldX;
                             const key = encodeKey(dy, dz);
 
                             if (this.solidArray[block] === 10) {
@@ -475,7 +492,7 @@ class IsoArcade {
 
         const blocksArray = [...visibilityMap.values(), ...filtered];
 
-        blocksArray.sort((a, b) => (a[2] - b[2]) || ((a[0] + a[1]) - (b[0] + b[1])));
+        blocksArray.sort((a, b) => ((a[2] - b[2]) * zAxis) || ((a[0] * xAxis + a[1] * yAxis) - (b[0] * xAxis+ b[1] * yAxis)));
         this.blocksArray = blocksArray;
 
         if (this.diagnostics) {
@@ -490,16 +507,21 @@ class IsoArcade {
         const camHalfWidth = this.canvas.width / 2;
         const camHalfHeight = this.canvas.height / 2;
 
+        const xAxis = Math.sign(this.axis.x)
+        const yAxis = Math.sign(this.axis.y)
+        const zAxis = Math.sign(this.axis.z)
+
         const xFactor = this.width / 2;
         const yFactorZ = this.height - 2 * this.offset;
         const yFactor = this.offset;
 
         for (let i = 0; i < this.blocksArray.length; i++) {
             const [x, y, z, block, magnitude] = this.blocksArray[i];
-            const worldX = x - camX;
-            const worldY = y - camY;
+            const worldX = (x - camX) * xAxis;
+            const worldY = (y - camY) * yAxis;
+            const worldZ = (z) * zAxis;
             const isoX = Math.ceil(xFactor * (worldX - worldY) + camHalfWidth);
-            const isoY = Math.ceil(-z * yFactorZ + (worldX + worldY) * yFactor + camHalfHeight);
+            const isoY = Math.ceil(-worldZ * yFactorZ + (worldX + worldY) * yFactor + camHalfHeight);
             this.blocksArray[i][5] = isoX;
             this.blocksArray[i][6] = isoY;
         }
@@ -548,8 +570,9 @@ class IsoArcade {
             const fog = Math.min(1, Math.abs(x - camX + y - camY) / this.fogScale)**2
             if (this.solidArray[block] == 10) {
                 const texture = this.textureArray[block];
-                for (const axis of this.axis) {
-                    const [ix, iy] = texture[this.axisToIndex(axis)];
+                for (const cardinal of ['x', 'y', 'z']) {
+                    const axis = this.axis[cardinal];
+                    const [ix, iy] = texture[Math.abs(axis) - 1];
                     const sx = ix * sw;
                     const sy = iy * sh;
                     const brightness = Math.min(1, Math.max(minLight, this.getLight(x, y, z, axis)) / maxLight);
@@ -622,8 +645,7 @@ class IsoArcade {
         }
     }
 
-    async propagateLight(startX, startY, startZ, startLuminosity, startAxis, shadow = false) {
-        console.clear()
+    async propagateLight(startX, startY, startZ, startLuminosity, startAxis, shadow, selfLuminosity) {
         const directions = [
             [1, 0, 0, 1],
             [0, 1, 0, 2],
@@ -632,6 +654,23 @@ class IsoArcade {
             [0, -1, 0, -2],
             [0, 0, -1, -3]
         ];
+        
+        if (selfLuminosity) {
+            for (const [dx, dy, dz, dirAxis] of directions) {
+                if (!startAxis) {
+                    this.addLight(startX, startY, startZ, shadow ? -selfLuminosity : selfLuminosity, dir)
+                }
+                else {
+                    if (startAxis == dirAxis) {
+                        const [nx, ny, nz] = [startX + dx, startY + dy, startZ + dz];
+                        this.addLight(nx, ny, nz, shadow ? -selfLuminosity : selfLuminosity, -startAxis)
+                        break
+                    }
+                }
+            }
+            if (startAxis) {this.addLight(startX, startY, startZ, shadow ? -selfLuminosity : selfLuminosity, -startAxis)} 
+            else {for (const [dx, dy, dz, dir] of directions) {this.addLight(startX, startY, startZ, shadow ? -selfLuminosity : selfLuminosity, dir)}}
+        }
 
         const attenuation = this.attenuation
 
@@ -644,15 +683,15 @@ class IsoArcade {
             if (visited.has(key)) continue;
             visited.add(key);
 
-            for (const [dx, dy, dz, dir] of directions) {
+            for (const [dx, dy, dz, dirAxis] of directions) {
                 const [nx, ny, nz] = [x + dx, y + dy, z + dz];
                 const hasBlock = this.hasBlock(nx, ny, nz);
-                if (hasBlock) {this.addLight(nx, ny, nz, shadow ? -luminosity : luminosity, -dir)};
+                if (hasBlock) {this.addLight(nx, ny, nz, shadow ? -luminosity : luminosity, -dirAxis)};
                 const transparency = hasBlock ? 1 - (this.solidArray[this.getBlock(nx, ny, nz)] / 10.) : 1
-                const fallOff = (dir == axis) ? 1. : attenuation
+                const fallOff = (dirAxis == axis) ? 1. : attenuation
                 const newluminosity = (luminosity - fallOff) * transparency;
                 if (newluminosity > 0) {
-                    queue.push({ x: nx, y: ny, z: nz, luminosity: newluminosity, axis: dir })
+                    queue.push({ x: nx, y: ny, z: nz, luminosity: newluminosity, axis: dirAxis })
                 }
             }
         }
@@ -667,7 +706,7 @@ class IsoArcade {
         for (let dx = 0; dx < size; dx++) {
             for (let dy = 0; dy < size; dy++) {
                 const z = this.getSkyLight(dx + cx * size, dy + cy * size);
-                await this.propagateLight(dx + cx * size, dy + cy * size, z + 1, this.sunLuminosity, this.sunAxis);
+                await this.propagateLight(dx + cx * size, dy + cy * size, z + 1, this.sunLuminosity, this.sunAxis, false, this.sunSelfLuminosity);
             }
         }
         this.SetChunkLoadState(cx, cy, 2)
@@ -760,7 +799,7 @@ class IsoArcade {
                         this.setBlock(x, y, z, 5); //stone
                     }
                 } 
-                if ((1 < h) && (h < mountainThreshold)) {
+                else if (1 < h) {
                     for (let z = 0; z < h; z++) {
                         this.setBlock(x, y, z, 3); //dirt
                     }
@@ -787,19 +826,20 @@ class IsoArcade {
         const [cx, cy] = this.roundChunk(x, y)
         if (!this.hasChunk(cx, cy)) {return};
         this.EnqueuedBlock = [];
+
         const lightSourceArray = this.getAffectedSources(x, y, z);
         for (const [x, y, z, luminosity, axis] of lightSourceArray) {this.propagateLight(x, y, z, luminosity, axis, true);};
         for (let dx = -this.sunLuminosity; dx <= this.sunLuminosity; dx++) {
             for (let dy = -this.sunLuminosity; dy <= this.sunLuminosity; dy++) {
                 const z = this.getSkyLight(x + dx, y + dy)
-                this.propagateLight(x + dx, y + dy, z + 1, this.sunLuminosity, this.sunAxis, true)
+                this.propagateLight(x + dx, y + dy, z + 1, this.sunLuminosity, this.sunAxis, true, this.sunSelfLuminosity)
             }
         }
         if (block) {this.setBlock(x, y, z, block)} else {this.deleteBlock(x, y, z)};
         for (let dx = -this.sunLuminosity; dx <= this.sunLuminosity; dx++) {
             for (let dy = -this.sunLuminosity; dy <= this.sunLuminosity; dy++) {
                 const z = this.getSkyLight(x + dx, y + dy)
-                this.propagateLight(x + dx, y + dy, z + 1, this.sunLuminosity, this.sunAxis)
+                this.propagateLight(x + dx, y + dy, z + 1, this.sunLuminosity, this.sunAxis, false, this.sunSelfLuminosity)
             }
         }
         for (const [x, y, z, luminosity, axis] of lightSourceArray) {this.propagateLight(x, y, z, luminosity, axis);};
@@ -956,6 +996,16 @@ window.addEventListener("keydown", (e) => {
     if (e.key === 's') keyS = true;
     if (e.key === 'a') keyA = true;
     if (e.key === 'd') keyD = true;
+
+    if (e.key === 'q') {
+        const { x, y } = arcade.axis;
+
+        arcade.axis.x = y;
+        arcade.axis.y = -x;
+    };
+    if (e.key === 'e') {
+        arcade.axis.z = -arcade.axis.z
+    };
 });
 
 window.addEventListener("keyup", (e) => {
