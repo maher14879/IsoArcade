@@ -19,7 +19,7 @@ class IsoArcade {
         this.chunkSize = 4; //root of actual size
         this.diagnostics = false;
         this.direction = {x: 1, y: 1, z: 1}
-        this.renderDistance = 4;
+        this.renderDistance = 7;
         this.worldHeight = 30;
         this.minLight = 3
         this.tickPerSecond = 5;
@@ -51,66 +51,10 @@ class IsoArcade {
         this.cameraDirection = [0, 0];
         this.voxelsArray = [];
         this.enqueuedVoxel= [];
-        this.worker = null;
-        this.workerBusy = false;
-        this.taskQueue = [];
+        self.rotateDirection = false
     }
-
-    rotateDirection() {
-        const x = this.direction.x
-        const y = this.direction.y
-        this.direction.x = y
-        this.direction.y = -x
-        this.sortVoxels()
-        this.direction.x = x
-        this.direction.y = y
-        this.enqueueTask({type: "rotateDirection"})
-    }
-
-    processNextTask = () => {
-        if (this.workerBusy || this.taskQueue.length === 0) return;
-        const nextTask = this.taskQueue.shift();
-        this.workerBusy = true;
-        this.worker.postMessage(nextTask);
-    };
-
-    enqueueTask = (task) => {
-        const exists = this.taskQueue.some(t => t.type === task.type);
-        if (exists) return;
-        this.taskQueue.push(task);
-        this.processNextTask();
-    };
 
     async init(id, initialCapacity = 10000) {
-        this.worker = new Worker("./worker.js");
-
-        this.worker.onmessage = (e) => {
-            const type = e.data.type;
-            switch (type) {
-                case "sortVoxelsDone":
-                    this.voxelsArray = e.data.voxelsArray
-                    this.workerBusy = false;
-                    this.processNextTask();
-                    break;
-                case "rotateDirectionDone":
-                    const x = this.direction.x
-                    const y = this.direction.y
-                    this.direction.x = y
-                    this.direction.y = -x
-                    this.workerBusy = false;
-                    this.processNextTask();
-                case "error":
-                    console.error("Worker error:", e.data.message);
-                    this.workerBusy = false;
-                    this.processNextTask();
-                    break;
-                default:
-                    console.warn("Unknown message type:", type);
-                    this.workerBusy = false;
-                    this.processNextTask();
-            }
-        };
-
         this.canvas = document.getElementById(id);
         if (!this.canvas) throw new Error('Canvas not found');
 
@@ -232,6 +176,14 @@ class IsoArcade {
             magFilter: 'nearest',
             minFilter: 'nearest'
         });
+    }
+
+    async initWorld(){
+        for (let cx = -30; cx <= 30; cx++) {
+            for (let cy = 30; cy <= 30; cy++) {
+                this.loadChunk(cx, cy)
+            }
+        }
     }
 
     setCapacity(newCapacity) {
@@ -451,39 +403,76 @@ class IsoArcade {
         return this.lightSourceMap.get(cx)?.get(cy);
     }
 
-    sortVoxels() {
-        const chunks = []
+    async sortVoxels() {
         const cxOffset = -this.renderDistance + this.roundChunk(this.camera[0], this.camera[1])[0]
         const cyOffset = -this.renderDistance + this.roundChunk(this.camera[0], this.camera[1])[1]
+        const solidArray = this.solidArray;
+        const canvasWidth = this.canvas.width;
+        const canvasHeight = this.canvas.height;
+        const camX = this.camera[0];
+        const camY = this.camera[1];
+        const camHalfWidth = this.canvas.width / 2;
+        const camHalfHeight = this.canvas.height / 2;
+        const canvasBorderX = this.width * this.CameraSpeed / this.tickPerSecond;
+        const canvasBorderY = this.height * this.CameraSpeed / this.tickPerSecond;
+        const xAxis = this.direction.x;
+        const yAxis = this.direction.y;
+        const zAxis = this.direction.z;
+        const xFactor = this.width / 2;
+        const yFactorZ = this.height - 2 * this.offset;
+        const yFactor = this.offset;
+
+        const visibilityMap = new Map();
+        const nonSolid = [];
+
+        const encodeKey = (dy, dz) => ((dy + 1024) << 12) | (dz + 1024);
 
         for (let cx = cxOffset; cx <= cxOffset + 2 * this.renderDistance; cx++) {
             for (let cy = cyOffset; cy <= cyOffset + 2 * this.renderDistance; cy++) {
                 const chunk = this.getChunk(cx, cy);
                 if (!chunk) continue;
-                chunks.push(chunk)
+                for (const [x, yMap] of chunk) {
+                    for (const [y, zMap] of yMap) {
+                        for (const [z, voxel] of zMap) {
+                            const worldX = (x - camX) * xAxis;
+                            const worldY = (y - camY) * yAxis;
+                            const worldZ = (z) * zAxis;
+                            const isoX = Math.ceil(xFactor * (worldX - worldY) + camHalfWidth);
+                            const isoY = Math.ceil(-worldZ * yFactorZ + (worldX + worldY) * yFactor + camHalfHeight);
+
+                            if (isoX + canvasBorderX < 0 || isoY + canvasBorderY < 0 || isoX - canvasBorderX > canvasWidth || isoY - canvasBorderY > canvasHeight) continue;
+
+                            const magnitude = worldX + worldY + worldZ;
+                            const dy = worldY - worldX;
+                            const dz = worldZ - worldX;
+                            const key = encodeKey(dy, dz);
+
+                            if (solidArray[voxel] === 10) {
+                                const existing = visibilityMap.get(key);
+                                if (!existing || magnitude > existing[4]) {
+                                    visibilityMap.set(key, [x, y, z, voxel, magnitude, isoX, isoY]);
+                                }
+                            } else {
+                                nonSolid.push([x, y, z, voxel, magnitude, isoX, isoY, key]);
+                            }
+                        }
+                    }
+                }
             }
         }
-        const task = {
-            type: "sortVoxels",
-            solidArray: this.solidArray,
-            canvasWidth: this.canvas.width,
-            canvasHeight: this.canvas.height,
-            camX: this.camera[0],
-            camY: this.camera[1],
-            camHalfWidth: this.canvas.width / 2,
-            camHalfHeight: this.canvas.height / 2,
-            canvasBorderX: this.width * this.CameraSpeed / this.tickPerSecond,
-            canvasBorderY: this.height * this.CameraSpeed / this.tickPerSecond,
-            xAxis: this.direction.x,
-            yAxis: this.direction.y,
-            zAxis: this.direction.z,
-            xFactor: this.width / 2,
-            yFactorZ: this.height - 2 * this.offset,
-            yFactor: this.offset,
-            chunks: chunks
-        };
 
-        this.enqueueTask(task);
+        const filtered = [];
+
+        for (const [x, y, z, voxel, magnitude, isoX, isoY, key] of nonSolid) {
+            const existing = visibilityMap.get(key);
+            if (!existing || magnitude > existing[4]) {
+                filtered.push([x, y, z, voxel, magnitude, isoX, isoY]);
+            }
+        }
+
+        const voxelsArray = [...visibilityMap.values(), ...filtered];
+        voxelsArray.sort((a, b) => ((a[2] - b[2]) * zAxis) || ((a[0] * xAxis + a[1] * yAxis) - (b[0] * xAxis+ b[1] * yAxis)));
+        this.voxelsArray = voxelsArray;
     }
 
     updateVoxels() {
@@ -573,8 +562,8 @@ class IsoArcade {
                 }
             } else {
                 const [ix, iy] = this.textureArray[voxel];
-                const sx = (ix * w) / this.texture.width;
-                const sy = (iy * h) / this.texture.height;
+                const sx = ix * sw;
+                const sy = iy * sh;
                 const maxLuminosity = Math.max(
                     light.x["1"], light.x["-1"],
                     light.y["1"], light.y["-1"],
@@ -686,17 +675,26 @@ class IsoArcade {
     }
 
     async chunkLight(cx, cy) {
-        for (const [x, y, z, luminosity, axis, direction, selfLuminosity] of this.lightSourceMap.get(cx)?.get(cy) ?? []) {
-            await this.propagateLight(x, y, z, luminosity, axis, direction, selfLuminosity);
-        }
-        const size = this.chunkSize**2;
+        const lightSources = this.lightSourceMap.get(cx)?.get(cy) ?? [];
+        await Promise.all(
+            lightSources.map(([x, y, z, luminosity, axis, direction, selfLuminosity]) =>
+                this.propagateLight(x, y, z, luminosity, axis, direction, selfLuminosity)
+            )
+        );
+
+        const size = this.chunkSize ** 2;
+        const promises = [];
         for (let dx = 0; dx < size; dx++) {
             for (let dy = 0; dy < size; dy++) {
                 const z = this.getSkyLight(dx + cx * size, dy + cy * size);
-                await this.propagateLight(dx + cx * size, dy + cy * size, z + 1, this.sunLuminosity, this.sunAxis, this.sunDirection, this.sunSelfLuminosity, false);
+                promises.push(
+                    this.propagateLight(dx + cx * size, dy + cy * size, z + 1, this.sunLuminosity, this.sunAxis, this.sunDirection, this.sunSelfLuminosity, false)
+                );
             }
         }
-        this.SetChunkLoadState(cx, cy, 2)
+        await Promise.all(promises);
+
+        this.SetChunkLoadState(cx, cy, 2);
     }
 
     getAffectedSources(x, y, z) {
@@ -742,46 +740,81 @@ class IsoArcade {
     }
 
     createTree(x, y, z) {
-        for (let dz = z; dz < z+4; dz++) {
-            this.setVoxel(x, y, dz, 4)
+        const trunkHeight = 10 + Math.floor(Math.random() * 20);
+        const branchLength = 4 + Math.floor(Math.random() * 3);
+        const canopyRadius = 5 + Math.floor(Math.random() * 3);
+
+        // Trunk (vertical logs)
+        for (let dz = 0; dz < trunkHeight; dz++) {
+            this.setVoxel(x, y, z + dz, 4)
+            // Slight trunk thickness
+            if (dz < trunkHeight - 4) {
+                this.setVoxel(x + 1, y, z + dz, 4)
+                this.setVoxel(x - 1, y, z + dz, 4)
+                this.setVoxel(x, y + 1, z + dz, 4)
+                this.setVoxel(x, y - 1, z + dz, 4)
+            }
         }
-        for (let dz = z+4; dz < z+6; dz++) {
-            this.setVoxel(x, y, dz, 4)
-            //leaves
-            this.setVoxel(x+1, y, dz, 0)
-            this.setVoxel(x, y+1, dz, 0)
-            this.setVoxel(x+1, y+1, dz, 0)
-            this.setVoxel(x-1, y, dz, 0)
-            this.setVoxel(x, y-1, dz, 0)
-            this.setVoxel(x-1, y-1, dz, 0)
-            this.setVoxel(x+1, y-1, dz, 0)
-            this.setVoxel(x-1, y+1, dz, 0)
+
+        // Branches (multiple, extending from upper trunk)
+        const branchHeights = [trunkHeight - 5, trunkHeight - 7, trunkHeight - 9]
+        const branchDirs = [
+            [1, 0], [-1, 1], [0, -1],
+            [1, 1], [-1, -1]
+        ]
+
+        for (const bh of branchHeights) {
+            for (const [dxDir, dyDir] of branchDirs) {
+                for (let i = 1; i <= branchLength; i++) {
+                    const bx = x + dxDir * i
+                    const by = y + dyDir * i
+                    const bz = z + bh
+                    this.setVoxel(bx, by, bz, 4)
+                }
+            }
         }
-        this.setVoxel(x, y, z+6, 0)
-        this.setVoxel(x+1, y, z+6, 0)
-        this.setVoxel(x, y+1, z+6, 0)
-        this.setVoxel(x+1, y+1, z+6, 0)
-        this.setVoxel(x-1, y, z+6, 0)
-        this.setVoxel(x, y-1, z+6, 0)
-        this.setVoxel(x-1, y-1, z+6, 0)
-        this.setVoxel(x+1, y-1, z+6, 0)
-        this.setVoxel(x-1, y+1, z+6, 0)
+
+        // Leaves canopy (big sphere over trunk top)
+        for (let dx = -canopyRadius; dx <= canopyRadius; dx++) {
+            for (let dy = -canopyRadius; dy <= canopyRadius; dy++) {
+                for (let dzOff = 0; dzOff <= canopyRadius * 2; dzOff++) {
+                    const dzPos = z + trunkHeight + dzOff - canopyRadius
+                    const dist = Math.sqrt(dx * dx + dy * dy + (dzOff - canopyRadius) * (dzOff - canopyRadius))
+                    if (dist <= canopyRadius + 0.5 && dist >= canopyRadius - 3) {
+                        this.setVoxel(x + dx, y + dy, dzPos, 0)
+                    }
+                }
+            }
+        }
+
+        // Leaves on branches ends (small clusters)
+        for (const bh of branchHeights) {
+            for (const [dxDir, dyDir] of branchDirs) {
+                const bx = x + dxDir * branchLength
+                const by = y + dyDir * branchLength
+                const bz = z + bh
+                for (let dx = -2; dx <= 2; dx++) {
+                    for (let dy = -2; dy <= 2; dy++) {
+                        for (let dzOff = 0; dzOff <= 3; dzOff++) {
+                            const dist = Math.abs(dx) + Math.abs(dy) + dzOff
+                            if (dist <= 4) {
+                                this.setVoxel(bx + dx, by + dy, bz + dzOff, 0)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     async createChunk(cx, cy) {
         const size = this.chunkSize**2;
 
-        if (cx == 0, cy == 0) {
-            for (let z = 0; z < this.worldHeight; z++) {
-                this.setVoxel(0, 0, z, 4)
-            } 
-        }
-        
         for (let dx = 0; dx < size; dx++) {
             for (let dy = 0; dy < size; dy++) {
                 const x = dx + cx * size;
                 const y = dy + cy * size;
-                this.setVoxel(x, y, 1, 3); //dirt
+                this.setVoxel(x, y, 1, 12); //sand
                 this.setVoxel(x, y, 2, 1); //water
                 
                 let h = Math.round(this.noise(x, y) * this.worldHeight);
@@ -792,18 +825,28 @@ class IsoArcade {
                         this.setVoxel(x, y, z, 5); //stone
                     }
                 } 
-                else if (1 < h) {
+                else if (h > 1) {
                     for (let z = 0; z < h; z++) {
-                        this.setVoxel(x, y, z, 3); //dirt
+                        this.setVoxel(x, y, z, 3);
                     }
-                    this.setVoxel(x, y, h, 2); //grass
-                    if (Math.random() < 0.01) {
-                        if (Math.random() < 0.1) {
-                            this.setVoxel(x, y, h + 1, 6) //torch
+                    const random = Math.random()
+                    if (h == 2) {
+                            this.setVoxel(x, y, h, 12); //sand
+                            if (random < 0.01) this.setVoxel(x, y, h + 1, 7); //root
+                        } else {
+                            this.setVoxel(x, y, h, 2); //grass
+                            if (random < 0.0005) {
+                                this.createTree(x, y, h + 1)
+                            } else if (random < 0.02) {
+                                this.setVoxel(x, y, h + 1, 8); //grass
+                            } else if (random < 0.03) {
+                                this.setVoxel(x, y, h + 1, 9); //plant
+                            } else if (random < 0.04) {
+                                this.setVoxel(x, y, h + 1, 10); //plant
+                            } else if (random < 0.05) {
+                                this.setVoxel(x, y, h + 1, 11); //plant
+                            }
                         }
-                        else {this.createTree(x, y, h + 1)}
-                    }
-
                 }
             }
         }
@@ -830,9 +873,9 @@ class IsoArcade {
         if (voxel) {
             this.setVoxel(x, y, z, voxel)
             const [luminosity, axis, direction, selfLuminosity] = this.luminosityArray[voxel]
-            this.propagateLight(x, y, z, luminosity, axis, direction, selfLuminosity)
+            await this.propagateLight(x, y, z, luminosity, axis, direction, selfLuminosity)
         } else {
-            this.deleteVoxel(x, y, z)
+            await this.deleteVoxel(x, y, z)
         };
         for (let dx = -this.sunLuminosity; dx <= this.sunLuminosity; dx++) {
             for (let dy = -this.sunLuminosity; dy <= this.sunLuminosity; dy++) {
@@ -918,11 +961,18 @@ class IsoArcade {
         return !(hasNeg && hasPos);
     }
 
-    tick() {
+    async tick() {
         this.dt -= this.tickTime
+        if (self.rotateDirection) {
+            const x = this.direction.x
+            const y = this.direction.y
+            this.direction.x = y
+            this.direction.y = -x
+            self.rotateDirection = false
+        }
 
-        arcade.updateChunks();
-        arcade.sortVoxels();
+        void arcade.updateChunks();
+        await Promise.all(arcade.sortVoxels());
 
         const [cxCam, cyCam] = this.roundChunk(this.camera[0], this.camera[1]);
         for (let cx = -this.renderDistance + cxCam; cx <= this.renderDistance + cxCam; cx++) {
@@ -949,7 +999,7 @@ class IsoArcade {
             this.tick()
         }
 
-        this.placeVoxel();
+        void this.placeVoxel();
         this.updateVoxels()
         this.draw();
     }
@@ -966,10 +1016,16 @@ const textureArray = [
     [[1,4], [1, 5], [1,3]], //dirt 3
     [[2,1], [2, 2], [2,0]], //wood 4
     [[2,4], [2, 5], [2,3]], //stone 5
-    [0, 2] //torch 6
+    [0, 2], //torch 6
+    [0, 3], //root 7
+    [0, 4], //grass 8
+    [0, 5], //plant 9
+    [0, 6], //plant 10
+    [0, 7], //plant 11
+    [[3,1], [3, 2], [3,0]], //sand 12
 ];
 
-const solidArray = [0, 8, 10, 10, 10, 10, 0];
+const solidArray = [0, 4, 10, 10, 10, 10, 0, 0, 0, 0, 0, 0, 10];
 const luminosityArray = [ //startLuminosity, startAxis, startDirection, selfLuminosity
     [0, 0, 0, 0], 
     [0, 0, 0, 0], 
@@ -977,13 +1033,20 @@ const luminosityArray = [ //startLuminosity, startAxis, startDirection, selfLumi
     [0, 0, 0, 0], 
     [0, 0, 0, 0], 
     [0, 0, 0, 0], 
-    [10, 4, 0, 0]
+    [16, 4, 0, 0],
+    [0, 0, 0, 0], 
+    [0, 0, 0, 0], 
+    [0, 0, 0, 0], 
+    [0, 0, 0, 0], 
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
 ];
 const arcade = new IsoArcade(4, 16, 16, textureArray, solidArray, luminosityArray);
-arcade.diagnostics = false
+arcade.diagnostics = true
 
 await arcade.init("game");
 await arcade.setTexture(textureSheet);
+await arcade.initWorld();
 
 const centerX = arcade.canvas.width / 2;
 const centerY = arcade.canvas.height / 2;
@@ -1009,7 +1072,7 @@ window.addEventListener("keyup", (e) => {
     if (e.key === 's') keyS = false;
     if (e.key === 'a') keyA = false;
     if (e.key === 'd') keyD = false;
-    if (e.key === 'q') arcade.rotateDirection();
+    if (e.key === 'q') arcade.rotateDirection = true;
 });
 
 document.addEventListener('mousemove', function (e) {
