@@ -19,7 +19,7 @@ class IsoArcade {
         this.chunkSize = 4; //root of actual size
         this.diagnostics = false;
         this.direction = {x: 1, y: 1, z: 1}
-        this.renderDistance = 7;
+        this.renderDistance = 6;
         this.worldHeight = 30;
         this.minLight = 3
         this.tickPerSecond = 5;
@@ -596,17 +596,23 @@ class IsoArcade {
     updateChunks() {
         const startTime = performance.now();
         const [cxCam, cyCam] = this.roundChunk(this.camera[0], this.camera[1]);
-        for (let cx = -this.renderDistance + cxCam - 1; cx <= this.renderDistance + cxCam + 1; cx++) {
-            for (let cy = -this.renderDistance + cyCam - 1; cy <= this.renderDistance + cyCam + 1; cy++) {
+        for (let cx = -this.renderDistance + cxCam - 1; cx < this.renderDistance + cxCam + 1; cx++) {
+            for (let cy = -this.renderDistance + cyCam - 1; cy < this.renderDistance + cyCam + 1; cy++) {
                 if (this.getChunkLoadState(cx, cy) == 0) {
                     this.loadChunk(cx, cy);
                 }
             }
         }
 
-        let chunkCount = 0
-        for (let cx = -this.renderDistance + cxCam; cx <= this.renderDistance + cxCam; cx++) {
-            for (let cy = -this.renderDistance + cyCam; cy <= this.renderDistance + cyCam; cy++) {
+        let chunkCount = 0;
+        let x = 0;
+        let y = 0;
+        for (let i = 0; i < 4 * (this.renderDistance - 1) + 3; i++) {
+            const orientation = i % 4
+            for (let j = 0; j < Math.floor(i / 2); j++) {            
+                const cx = x + cxCam
+                const cy = y + cyCam
+                console.log(cx, cy)
                 if (this.getChunkLoadState(cx, cy) == 1) {
                     const neighborsLoaded = (
                         (this.getChunkLoadState(cx+1, cy) > 0) &&
@@ -624,10 +630,15 @@ class IsoArcade {
                             this.chunkLight(cx, cy);
                             chunkCount += 1;
                         }
-                    };
-                };
+                    }
+                }
+                if (orientation == 0) {x++}
+                else if (orientation == 1) {y++}
+                else if (orientation == 2) {x--}
+                else {y--}
             }
         }
+
         if (this.diagnostics) {
             const updateChunksTime = (performance.now() - startTime).toFixed(2);
             console.log("Update chunks took:", updateChunksTime);
