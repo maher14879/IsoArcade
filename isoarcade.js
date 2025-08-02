@@ -110,10 +110,10 @@ class IsoArcade {
 
         this.setCapacity(initialCapacity);
 
-        const shaderResponse = await fetch('/shaders/vertex.wgsl');
+        const shaderResponse = await fetch('https://cdn.jsdelivr.net/gh/maher14879/IsoArcade@main/shaders/vertex.wgsl');
         const shaderCode = await shaderResponse.text();
 
-        const fragmentResponse = await fetch('/shaders/fragment.wgsl');
+        const fragmentResponse = await fetch('https://cdn.jsdelivr.net/gh/maher14879/IsoArcade@main/shaders/fragment.wgsl');
         const fragmentCode = await fragmentResponse.text();
 
         this.pipeline = this.device.createRenderPipeline({
@@ -1043,7 +1043,7 @@ class IsoArcade {
 
 const textureSheet = new Image();
 textureSheet.crossOrigin = 'anonymous';
-textureSheet.src = 'assets/images/pixelart/texture_sheet.png';
+textureSheet.src = 'https://cdn.jsdelivr.net/gh/maher14879/IsoArcade@main/assets/texture_sheet.png'
 
 const textureArray = [
     [0, 0], //leaves 0
