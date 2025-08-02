@@ -607,18 +607,18 @@ class IsoArcade {
 
     updateChunks() {
         const startTime = performance.now();
-        let chunkCount = 0;
+        
         const [cxCam, cyCam] = this.roundChunk(this.camera.x, this.camera.y);
         for (let cx = -this.renderDistance + cxCam - 1; cx < this.renderDistance + cxCam + 1; cx++) {
             for (let cy = -this.renderDistance + cyCam - 1; cy < this.renderDistance + cyCam + 1; cy++) {
                 if (this.getChunkLoadState(cx, cy) == 0) {
                     this.loadChunk(cx, cy);
-                    chunkCount++
                 }
             }
         }
         let x = 0;
         let y = 0;
+        let chunkCount = 0;
         for (let i = 0; i < 4 * (this.renderDistance - 1) + 3; i++) {
             if (chunkCount >= this.chunksPerTick) {break};
             const orientation = i % 4
@@ -650,8 +650,6 @@ class IsoArcade {
                 else {y--}
             }
         }
-
-        if (chunkCount >= this.chunksPerTick) {this.sortVoxels()};
         if (this.diagnostics) {
             const updateChunksTime = (performance.now() - startTime).toFixed(2);
             console.log("Update chunks took:", updateChunksTime);
@@ -933,20 +931,21 @@ class IsoArcade {
         }
     }
 
-    interact(mx, my, key) {
+    interact(mx, my, button) {
         const hoverVoxel = this.getHoveredVoxel(mx, my)
         if (hoverVoxel) {
             const [x, y, z, voxel, axis] = hoverVoxel
-            this.cameraDestination.x = x;
-            this.cameraDestination.y = y;
-            this.sortVoxels()
-            if (key == 2) {
+            if (button == 0) {
+                this.enqueuedVoxel = [x, y, z, false];
+            } else if (button == 1) {
+                this.cameraDestination.x = x;
+                this.cameraDestination.y = y;
+                this.sortVoxels()
+            } else if (button == 2) {
                 if (axis == 0) {this.enqueuedVoxel= [x + this.direction.x, y, z, 6]}
                 else if (axis == 1) {this.enqueuedVoxel= [x, y + this.direction.y, z, 6]}
                 else if (axis == 2) {this.enqueuedVoxel= [x, y, z + this.direction.z, 6]};
-            } else if (key == 0) {
-                this.enqueuedVoxel = [x, y, z, false];
-            }
+            } 
         }
     }
 
@@ -999,7 +998,8 @@ class IsoArcade {
         return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1]);
     }
     
-    triangle(dx, dy, a, b, c) { //clockwise
+    triangle(dx, dy, a, b, c) {
+        //clockwise
         const p = [dx, dy];
         const d1 = this.sign(p, a, b);
         const d2 = this.sign(p, b, c);
@@ -1043,7 +1043,7 @@ class IsoArcade {
 
 const textureSheet = new Image();
 textureSheet.crossOrigin = 'anonymous';
-textureSheet.src = 'assets/texture_sheet.png';
+textureSheet.src = 'assets/images/pixelart/texture_sheet.png';
 
 const textureArray = [
     [0, 0], //leaves 0
@@ -1079,48 +1079,25 @@ const luminosityArray = [ //startLuminosity, startAxis, startDirection, selfLumi
 ];
 
 const arcade = new IsoArcade(4, 16, 16, textureArray, solidArray, luminosityArray);
-arcade.diagnostics = true
+arcade.diagnostics = false
 
 await arcade.init("game");
 await arcade.setTexture(textureSheet);
 await arcade.initWorld();
 
-const centerX = arcade.canvas.width / 2;
-const centerY = arcade.canvas.height / 2;
-
-let keyW = false;
-let keyS = false;
-let keyA = false;
-let keyD = false;
-
-let mx = 0
-let my = 0
-let press = false
-
-window.addEventListener("keydown", (e) => {
-    if (e.key === 'w') keyW = true;
-    if (e.key === 's') keyS = true;
-    if (e.key === 'a') keyA = true;
-    if (e.key === 'd') keyD = true;
-});
-
 window.addEventListener("keyup", (e) => {
-    if (e.key === 'w') keyW = false;
-    if (e.key === 's') keyS = false;
-    if (e.key === 'a') keyA = false;
-    if (e.key === 'd') keyD = false;
     if (e.key === 'q') arcade.rotateDirection = true;
 });
 
+let mx = 0
+let my = 0
 document.addEventListener('mousemove', function (e) {
     mx = e.clientX;
     my = e.clientY;
 });
 
 window.addEventListener("mousedown", (e) => {
-    if (e.button === 0) {arcade.interact(mx, my, 0)} 
-    else if (e.button === 2) {arcade.interact(mx, my, 2)}
-
+    arcade.interact(mx, my, e.button)
 });
 
 let fpsSum = 0;
@@ -1137,7 +1114,6 @@ function gameLoop(timestamp) {
         const average = fpsSum / fpsCount;
         console.log("fps:", fps.toFixed(2), "average fps:", average.toFixed(2));
     }
-
     requestAnimationFrame(gameLoop);
 }
 
