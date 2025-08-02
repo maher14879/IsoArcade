@@ -1119,13 +1119,17 @@ function gameLoop(timestamp) {
 
 let lastTick = performance.now();
 const tickTestInterval = 100;
-
+let firstLoad = true
 async function tickLoop() {
     while (true) {
         const now = performance.now();
         if (now - lastTick >= tickTestInterval) {
             lastTick = now;
             await arcade.tick();
+            if (firstLoad) {
+                arcade.sortVoxels();
+                firstLoad = false;
+            }
         }
         await new Promise(r => setTimeout(r, 0));
     }
