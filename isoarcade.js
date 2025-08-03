@@ -1,6 +1,7 @@
 class IsoArcade {
-    constructor(offset, width, height, textureArray, solidArray, luminosityArray) {       
+    constructor(worldName, offset, width, height, textureArray, solidArray, luminosityArray) {       
         // User defined
+        this.worldName = worldName;
         this.offset = offset;
         this.width = width;
         this.height = height;
@@ -22,10 +23,10 @@ class IsoArcade {
         this.renderDistance = 6;
         this.worldHeight = 30;
         this.minLight = 3
-        this.tickPerSecond = 5;
+        this.taskPerSecond = 5;
         this.voxelsPerSecond = 10;
         this.CameraSpeed = 4;
-        this.chunksPerTick = 1;
+        this.chunksPerTask = 1;
 
         // WebGPU
         this.adapter = null;
@@ -38,7 +39,7 @@ class IsoArcade {
 
         // Calculated
         this.voxelPlaceTime = 1 / this.voxelsPerSecond;
-        this.tickTime = (1 / this.tickPerSecond)
+        this.taskTime = (1 / this.taskPerSecond)
 
         // Data storage
         this.spriteCount = 0;
@@ -47,16 +48,17 @@ class IsoArcade {
         this.voxelsMap = new Map();
         this.lightMap = new Map();
         this.lightSourceMap = new Map();
-        this.chunkLoadState = new Map();
+        this.chunkLoadState = new Map(); //0: not begun, 1: begun loading, 2: loaded, 3: begun light, 4: light done
         this.camera = {x: 0, y: 0};
         this.cameraDestination = {x: 0, y: 0};
         this.voxelsArray = [];
         this.enqueuedVoxel= [];
-        this.rotateDirection = false
+        this.rotateDirection = false;
+        this.isSaving = false;
     }
 
-    async init(id, initialCapacity = 10000) {
-        this.canvas = document.getElementById(id);
+    async init(initialCapacity = 10000) {
+        this.canvas = document.getElementById("isoarcade");
         if (!this.canvas) throw new Error('Canvas not found');
 
         this.canvas.width = this.canvas.clientWidth;
@@ -179,14 +181,102 @@ class IsoArcade {
         });
     }
 
-    async initWorld() {
-        const promises = [];
-        for (let cx = -30; cx <= 30; cx++) {
-            for (let cy = 30; cy <= 30; cy++) {
-                promises.push(this.loadChunk(cx, cy));
+    async loadStructure(id, x, y, z) {
+        const filePath = `structures/${id}.bin`;
+        const response = await fetch(filePath);
+        const buffer = await response.arrayBuffer();
+        const view = new DataView(buffer);
+
+        for (let i = 0; i < view.byteLength; i += 16) {
+            const dx = view.getInt32(i);
+            const dy = view.getInt32(i + 4);
+            const dz = view.getInt32(i + 8);
+            const voxel = view.getInt32(i + 12);
+            this.setVoxel(x + dx, y + dy, z + dz, voxel);
+        }
+    }
+
+    async loadChunk(cx, cy) {
+        const cache = await caches.open(this.worldName);
+        const keys = await cache.keys()
+        const response = await cache.match(`${cx},${cy}.bin`);
+
+        if (!response) return false;
+        const buffer = await response.arrayBuffer();
+        const view = new DataView(buffer);
+
+        for (let i = 0; i < view.byteLength; i += 16) {
+            const x = view.getInt32(i);
+            const y = view.getInt32(i + 4);
+            const z = view.getInt32(i + 8);
+            const voxel = view.getInt32(i + 12);
+            this.setVoxel(x, y, z, voxel);
+        }
+        return true;
+    }
+
+    async saveChunk(cx, cy) {
+        const voxels = [];
+        const chunk = this.getChunk(cx, cy);
+        if (!chunk) return;
+
+        for (const [x, xMap] of chunk.entries()) {
+            for (const [y, yMap] of xMap.entries()) {
+                for (const [z, voxel] of yMap.entries()) {
+                    voxels.push(x, y, z, voxel);
+                }
             }
         }
-        await Promise.all(promises);
+
+        const buffer = new ArrayBuffer(voxels.length * 4);
+        const view = new DataView(buffer);
+        voxels.forEach((v, i) => view.setInt32(i * 4, v));
+
+        await caches.open(this.worldName).then(cache => {
+            const response = new Response(buffer, { headers: { "Content-Type": "application/octet-stream" } });
+            return cache.put(new Request(`${cx},${cy}.bin`), response);
+        });
+    }
+
+    async saveChunks() {
+        this.isSaving = true;
+        const promises = [];
+        for (const [cx, cxMap] of this.voxelsMap.entries()) {
+            for (const [cy] of cxMap.entries()) {
+                promises.push(this.saveChunk(cx, cy));
+            }
+        }
+        await Promise.all(promises)
+        this.isSaving = false;
+    }
+
+    async exportChunks() {
+        const dirHandle = await window.showDirectoryPicker();
+
+        for (const [cx, cxMap] of this.voxelsMap.entries()) {
+            for (const [cy] of cxMap.entries()) {
+                const voxels = [];
+                const chunk = this.getChunk(cx, cy);
+                if (!chunk) continue;
+
+                for (const [x, xMap] of chunk.entries()) {
+                    for (const [y, yMap] of xMap.entries()) {
+                        for (const [z, voxel] of yMap.entries()) {
+                            voxels.push(x, y, z, voxel);
+                        }
+                    }
+                }
+
+                const buffer = new ArrayBuffer(voxels.length * 4);
+                const view = new DataView(buffer);
+                voxels.forEach((v, i) => view.setInt32(i * 4, v));
+
+                const fileHandle = await dirHandle.getFileHandle(`${cx},${cy}.bin`, { create: true });
+                const writable = await fileHandle.createWritable();
+                await writable.write(buffer);
+                await writable.close();
+            }
+        }
     }
 
     setCapacity(newCapacity) {
@@ -595,24 +685,25 @@ class IsoArcade {
         }
     }
 
-    async loadChunk(cx, cy) {
+    async initChunk(cx, cy) {
         const startTime = performance.now();
-        await this.createChunk(cx, cy);
-        this.SetChunkLoadState(cx, cy, 1);
+        const hasChunk = await this.loadChunk(cx, cy);
+        if (!hasChunk) await this.createChunk(cx, cy);
+        this.SetChunkLoadState(cx, cy, 2);
         if (this.diagnostics) {
             const chunkCreationTime = (performance.now() - startTime).toFixed(2);
             console.log("Creating chunk", cx, cy, "took:", chunkCreationTime);
         }
     }
 
-    updateChunks() {
+    async updateChunks() {
         const startTime = performance.now();
-        
         const [cxCam, cyCam] = this.roundChunk(this.camera.x, this.camera.y);
         for (let cx = -this.renderDistance + cxCam - 1; cx < this.renderDistance + cxCam + 1; cx++) {
             for (let cy = -this.renderDistance + cyCam - 1; cy < this.renderDistance + cyCam + 1; cy++) {
                 if (this.getChunkLoadState(cx, cy) == 0) {
-                    this.loadChunk(cx, cy);
+                    this.SetChunkLoadState(cx, cy, 1);
+                    await this.initChunk(cx, cy);
                 }
             }
         }
@@ -620,26 +711,27 @@ class IsoArcade {
         let y = 0;
         let chunkCount = 0;
         for (let i = 0; i < 4 * (this.renderDistance - 1) + 3; i++) {
-            if (chunkCount >= this.chunksPerTick) {break};
+            if (chunkCount >= this.chunksPerTask) {break};
             const orientation = i % 4
             for (let j = 0; j < i >> 1; j++) {            
                 const cx = x + cxCam
                 const cy = y + cyCam
-                if (this.getChunkLoadState(cx, cy) == 1) {
+                if (this.getChunkLoadState(cx, cy) == 2) {
                     const neighborsLoaded = (
-                        (this.getChunkLoadState(cx+1, cy) > 0) &&
-                        (this.getChunkLoadState(cx-1, cy) > 0) &&
-                        (this.getChunkLoadState(cx, cy+1) > 0) &&
-                        (this.getChunkLoadState(cx, cy-1) > 0) &&
-                        (this.getChunkLoadState(cx-1, cy-1) > 0) &&
-                        (this.getChunkLoadState(cx+1, cy+1) > 0) &&
-                        (this.getChunkLoadState(cx-1, cy+1) > 0) &&
-                        (this.getChunkLoadState(cx+1, cy-1) > 0)
+                        (this.getChunkLoadState(cx+1, cy) > 1) &&
+                        (this.getChunkLoadState(cx-1, cy) > 1) &&
+                        (this.getChunkLoadState(cx, cy+1) > 1) &&
+                        (this.getChunkLoadState(cx, cy-1) > 1) &&
+                        (this.getChunkLoadState(cx-1, cy-1) > 1) &&
+                        (this.getChunkLoadState(cx+1, cy+1) > 1) &&
+                        (this.getChunkLoadState(cx-1, cy+1) > 1) &&
+                        (this.getChunkLoadState(cx+1, cy-1) > 1)
                     );
 
                     if (neighborsLoaded) {
-                        if (chunkCount < this.chunksPerTick) {
+                        if (chunkCount < this.chunksPerTask) {
                             this.chunkLight(cx, cy);
+                            this.SetChunkLoadState(cx, cy, 3);
                             chunkCount++;
                         } else {break}
                     }
@@ -716,7 +808,7 @@ class IsoArcade {
             }
         }
         await Promise.all(promises)
-        this.SetChunkLoadState(cx, cy, 2);
+        this.SetChunkLoadState(cx, cy, 4);
     }
 
     getAffectedSources(x, y, z) {
@@ -754,7 +846,7 @@ class IsoArcade {
 
         const [px, py, pz, voxel] = this.enqueuedVoxel;
         const [cx, cy] = this.roundChunk(px, py);
-        if (this.getChunkLoadState(cx, cy) < 2) {return};
+        if (this.getChunkLoadState(cx, cy) < 4) {return};
         this.enqueuedVoxel = [];
 
         const promises = [];
@@ -1011,9 +1103,9 @@ class IsoArcade {
         return !(hasNeg && hasPos);
     }
 
-    async tick() {
-        if (this.dt < this.tickTime) {return};
-        this.dt -= this.tickTime;
+    async task() {
+        if (this.dt < this.taskTime) {return};
+        this.dt -= this.taskTime;
 
         this.placeVoxel();
 
@@ -1026,7 +1118,7 @@ class IsoArcade {
             this.rotateDirection = false;
         }
 
-        this.updateChunks();
+        await this.updateChunks();
     }
 
     update(dt) {
@@ -1078,15 +1170,17 @@ const luminosityArray = [ //startLuminosity, startAxis, startDirection, selfLumi
     [0, 0, 0, 0],
 ];
 
-const arcade = new IsoArcade(4, 16, 16, textureArray, solidArray, luminosityArray);
-arcade.diagnostics = false
+const arcade = new IsoArcade("test_game", 4, 16, 16, textureArray, solidArray, luminosityArray);
+arcade.diagnostics = false;
 
-await arcade.init("game");
+await arcade.init();
 await arcade.setTexture(textureSheet);
-await arcade.initWorld();
 
 window.addEventListener("keyup", (e) => {
     if (e.key === 'q') arcade.rotateDirection = true;
+    if (e.key === 'o') arcade.saveChunks();
+    if (e.key === 'p') arcade.exportChunks();
+    if (e.key === 'c') caches.delete("voxel-cache")
 });
 
 let mx = 0
@@ -1097,7 +1191,11 @@ document.addEventListener('mousemove', function (e) {
 });
 
 window.addEventListener("mousedown", (e) => {
-    arcade.interact(mx, my, e.button)
+    arcade.interact(mx, my, e.button);
+});
+
+window.addEventListener("beforeunload", (e) => {
+    if (arcade.isSaving) {e.preventDefault()};
 });
 
 let fpsSum = 0;
@@ -1117,23 +1215,18 @@ function gameLoop(timestamp) {
     requestAnimationFrame(gameLoop);
 }
 
-let lastTick = performance.now();
-const tickTestInterval = 100;
-let firstLoad = true
-async function tickLoop() {
+let lastTask = performance.now();
+const taskTestInterval = 100;
+async function taskLoop() {
     while (true) {
         const now = performance.now();
-        if (now - lastTick >= tickTestInterval) {
-            lastTick = now;
-            await arcade.tick();
-            if (firstLoad) {
-                arcade.sortVoxels();
-                firstLoad = false;
-            }
+        if (now - lastTask >= taskTestInterval) {
+            lastTask = now;
+            await arcade.task();
+            if (arcade.voxelsArray.length == 0) arcade.sortVoxels();
         }
         await new Promise(r => setTimeout(r, 0));
     }
 }
-
-tickLoop();
+taskLoop();
 requestAnimationFrame(gameLoop);
