@@ -1,4 +1,5 @@
-class arcade {
+
+class Arcade {
     constructor(offset, width, height, textureArray, solidArray, luminosityArray, structureIdArray) {       
         // User defined
         this.worldName = "default-world-name";
@@ -21,7 +22,7 @@ class arcade {
         this.chunkSize = 4; //root of actual size
         this.diagnostics = false;
         this.direction = {x: 1, y: 1, z: 1}
-        this.renderDistance = 6;
+        this.renderDistance = 7;
         this.worldHeight = 64;
         this.minLight = 3
         this.taskPerSecond = 5;
@@ -201,7 +202,8 @@ class arcade {
             const dy = view.getInt32(i + 4);
             const dz = view.getInt32(i + 8);
             const voxel = view.getInt32(i + 12);
-            this.setVoxel(x + dx, y + dy, z + dz, voxel);
+            this.setVoxel(x + dx - 16, y + dy - 16, z + dz, voxel);
+            console.log(dx, dy, dz)
         }
     }
 
@@ -261,6 +263,8 @@ class arcade {
 
     async exportChunks() {
         const dirHandle = await window.showDirectoryPicker();
+        const size = this.chunkSize**2
+        const halfSize = size / 2
 
         for (const [cx, cxMap] of Array.from(this.voxelsMap.entries()).reverse()) {
             for (const [cy] of Array.from(cxMap.entries()).reverse()) {
@@ -271,7 +275,7 @@ class arcade {
                 for (const [x, xMap] of chunk.entries()) {
                     for (const [y, yMap] of xMap.entries()) {
                         for (const [z, voxel] of yMap.entries()) {
-                            voxels.push(x, y, z, voxel);
+                            voxels.push(x - size * cx - halfSize, y - size * cy - halfSize, z, voxel);
                         }
                     }
                 }
@@ -521,8 +525,8 @@ class arcade {
     sortVoxels() {
         const camX = this.camera.x;
         const camY = this.camera.y;
-        const cxOffset = -this.renderDistance + this.roundChunk(camX, camY)[0]
-        const cyOffset = -this.renderDistance + this.roundChunk(camX, camY)[1]
+        const cxOffset = this.roundChunk(camX, camY)[0]
+        const cyOffset = this.roundChunk(camX, camY)[1]
         const textureArray = this.textureArray;
         const canvasWidth = this.canvas.width;
         const canvasHeight = this.canvas.height;
@@ -543,8 +547,8 @@ class arcade {
 
         const encodeKey = (dy, dz) => ((dy + 1024) << 12) | (dz + 1024);
 
-        for (let cx = cxOffset; cx <= cxOffset + 2 * this.renderDistance; cx++) {
-            for (let cy = cyOffset; cy <= cyOffset + 2 * this.renderDistance; cy++) {
+        for (let cx = cxOffset - this.renderDistance; cx <= cxOffset + this.renderDistance; cx++) {
+            for (let cy = cyOffset - this.renderDistance; cy <= cyOffset + this.renderDistance; cy++) {
                 const chunk = this.getChunk(cx, cy);
                 if (!chunk) continue;
                 for (const [x, yMap] of chunk) {
@@ -722,7 +726,7 @@ class arcade {
 
     async updateChunks() {
         const startTime = performance.now();
-        const [cxCam, cyCam] = this.roundChunk(this.camera.x, this.camera.y);
+        const [cxCam, cyCam] = this.roundChunk(this.cameraDestination.x, this.cameraDestination.y);
         for (let cx = -this.renderDistance + cxCam - 1; cx < this.renderDistance + cxCam + 1; cx++) {
             for (let cy = -this.renderDistance + cyCam - 1; cy < this.renderDistance + cyCam + 1; cy++) {
                 if (this.getChunkLoadState(cx, cy) == 0) {
@@ -1046,7 +1050,7 @@ class Biome {
         this.structureGeneration = [];
     }
 
-    addVoxel(voxel, probability, replace, startHeight, endHeight, ignoreLayer, startLayer, endLayer, layerOffset = 0) {
+    addVoxel(voxel, probability = 1, replace = false, startHeight = 0, endHeight = 0, ignoreLayer = false, startLayer = -1, endLayer = -1, layerOffset = 0) {
         this.naturalGeneration.push([voxel.id, probability, replace, startHeight, endHeight, ignoreLayer, startLayer, endLayer, layerOffset])
     }
     addStructure(id, probability, startHeight, endHeight, groundVoxel)  {
@@ -1061,6 +1065,8 @@ class Game {
         this.taskTestInterval = 100;
         this.src = textureSource;
         this.ticksPerSecond = 10;
+        this.threshold = 0.3;
+        this.biomeBlending = 10;
 
         //data
         this.position = {x: 0, y: 0};
@@ -1087,7 +1093,7 @@ class Game {
             }
         }
 
-        this.arcade = new arcade(offset, width, height, textureArray, solidArray, luminosityArray, structureIdArray);
+        this.arcade = new Arcade(offset, width, height, textureArray, solidArray, luminosityArray, structureIdArray);
         this.arcade.generateTerrain = this.createGenerationFunction(biomes, climate);
     }
 
@@ -1149,19 +1155,27 @@ class Game {
         this.arcade.sortVoxels();
     }
 
+    rotateFlip() {
+        this.arcade.direction.z = -this.arcade.direction.z;
+        this.arcade.sortVoxels();
+    }
+
     destroy() {
         const hoverVoxel = this.arcade.getHoveredVoxel(this.position.x, this.position.y);
         if (!hoverVoxel) {return};
         const [x, y, z, axis] = hoverVoxel;
         this.arcade.enqueuedVoxel = [x, y, z, false];
+        console.log(x, y, z)
     }
 
-    move() {
+    async move() {
         const hoverVoxel = this.arcade.getHoveredVoxel(this.position.x, this.position.y);
         if (!hoverVoxel) {return};
         const [x, y, z, axis] = hoverVoxel;
         this.arcade.cameraDestination.x = x;
         this.arcade.cameraDestination.y = y;
+        this.arcade.sortVoxels();
+        await this.arcade.updateChunks();
         this.arcade.sortVoxels();
     }
 
@@ -1176,6 +1190,12 @@ class Game {
 
     fastHash64(x, y) {
         return (x + y * 31) & 63;
+    }
+
+    fastHash01(x, y) {
+        const h0 = Math.imul(x, 0x85ebca6b) ^ Math.imul(y, 0xc2b2ae35);
+        const h1 = Math.imul(((h0 ^ (h0 >>> 13)) >>> 0), 0x27d4eb2d);
+        return ((h1 ^ (h1 >>> 15)) >>> 0) / 4294967296;
     }
 
     hashRandom(random, x) {
@@ -1193,7 +1213,8 @@ class Game {
             const ticksPerFrame = voxel.ticksPerFrame;
             if (!ticksPerFrame) {continue};
             if (((this.tickCount + this.fastHash64(x, y)) % ticksPerFrame) == 0) {
-                const index = voxel.index + ((voxelIndex + 1) % voxel.frames);
+                const nextFrame = ((voxelIndex - voxel.index) + 1) % voxel.frames;
+                const index = voxel.index + nextFrame;
                 this.arcade.updateVoxel(x, y, z, index);
             }
         }
@@ -1202,10 +1223,14 @@ class Game {
     createGenerationFunction(biomes, climate) {
         const biomeData = [];
         const getClimate = climate;
+        const fastHash01 = this.fastHash01;
+        const hashRandom = this.hashRandom;
+        const threshold = this.threshold;
+        const biomeBlending = this.biomeBlending;
         for (const biome of biomes) {
             const naturalGeneration = biome.naturalGeneration.map(
                 ([id, probability, replace, startHeight, endHeight, ignoreLayer, startLayer, endLayer, layerOffset]) => 
-                [this.voxels.get(id).index, this.voxels.get(frames), probability, replace, startHeight, endHeight, ignoreLayer, startLayer, endLayer, layerOffset]);
+                [this.voxels.get(id).index, this.voxels.get(id).frames, probability, replace, startHeight, endHeight, ignoreLayer, startLayer, endLayer, layerOffset]);
             const structureGeneration = biome.structureGeneration.map(
                 ([id, probability, startHeight, endHeight, voxelId]) =>
                 [id, probability, startHeight, endHeight, voxelId ? this.voxels.get(voxelId).index : -1]
@@ -1219,13 +1244,14 @@ class Game {
         return (x, y) => {
             const pillar = [];
             const structures = [];
-            const [temperature, humidity] = getClimate(x, y)
+            const [temperature, humidity] = getClimate(x, y);
+            const mainRandom = fastHash01(x, y);
             const weightedHeights = [];
 
             for (const [naturalGeneration, structureGeneration, biomeTemperature, biomeHumidity, noise, terrain] of biomeData) {
                 const tempDiff = Math.abs(biomeTemperature - temperature);
                 const humidityDiff = Math.abs(biomeHumidity - humidity);
-                const climateMatch = 1 / (1 + tempDiff + humidityDiff);
+                const climateMatch = Math.exp(-(tempDiff + humidityDiff) * threshold);
                 weightedHeights.push([terrain(x, y), climateMatch]);
             }
 
@@ -1234,32 +1260,38 @@ class Game {
             const h = Math.round(weightedHeights.reduce((sum, [h, w]) => sum + h * w, 0) / totalWeight);
             
             let i = 0;
+            let probabilitySum = 0;
             for (const [naturalGeneration, structureGeneration, biomeTemperature, biomeHumidity, noise, terrain] of biomeData) {
                 const probabilityClimate = normalized[i][1]
+                probabilitySum += probabilityClimate;
+                if (probabilitySum < 0.5 + (mainRandom / biomeBlending)) {
+                    i++
+                    continue;
+                };
                 const random = noise(x, y);
                 for (let z = 0; z <= this.arcade.worldHeight; z++) {
                     let voxelIndex = -1
                     for (const [index, frames, probability, replace, startHeight, endHeight, ignoreLayer, startLayer, endLayer, layerOffset] of naturalGeneration) {
                         if (z > (h + layerOffset) && !ignoreLayer) {continue};
-                        if (probability * probabilityClimate < this.hashRandom(random, index)) {continue};
+                        if (probability < hashRandom(random, index)) {continue};
                         if (voxelIndex >= 0 && !replace) {continue};
                         if (startHeight >= 0 && startHeight > z) {continue};
                         if (endHeight >= 0 && endHeight < z) {continue};
                         if (startLayer >= 0 && z < startLayer + (h + layerOffset)) continue;
                         if (endLayer >= 0 && z > endLayer + (h + layerOffset)) continue;
-                        voxelIndex = index + (frames > 0 ? Math.floor(random * frames) : 0);
+                        voxelIndex = index + ((frames > 0) ? Math.floor(mainRandom * frames) : 0);
                     };
                     if (voxelIndex >= 0) {pillar.push([z, voxelIndex])};
                     for (const [id, probability, startHeight, endHeight, index] of structureGeneration) {
-                        if (probability * probabilityClimate < random) {continue};
-                        if (!(startHeight < 0) && startHeight > z) {continue};
-                        if (!(endHeight < 0) && endHeight < z) {continue};
-                        if (!(index < 0) && voxelIndex != index) {continue};
+                        if (voxelIndex != index) {continue};
+                        if (probability * probabilityClimate < hashRandom(random, id)) {continue};
+                        if (startHeight >= 0 && startHeight > z) {continue};
+                        if (endHeight >= 0 && endHeight < z) {continue};
                         structures.push([z, id]);
                         break;
                     };
                 }
-                i++
+                break;
             }
             return [pillar, structures];
         };
