@@ -1297,3 +1297,5 @@ class Game {
         };
     }
 }
+
+export { Arcade, Voxel, Biome, Game };
