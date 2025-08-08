@@ -1204,7 +1204,7 @@ class Game {
     }
 
     tick() {
-        game.arcade.saveChunks()
+        this.arcade.saveChunks()
         this.tickCount++
         //go through all voxels and map to voxel and then run tick on block
         for (const [x, y, z, magnitude, isoX, isoY] of this.arcade.voxelsArray) {
