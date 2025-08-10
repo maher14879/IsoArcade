@@ -14,6 +14,7 @@ const grass = new Voxel("grass", [[0, 4]], undefined, 0, undefined);
 const plant = new Voxel("plant", [[0, 5], [0, 6], [0, 7]], 4, 0, undefined);
 const smallLilly = new Voxel("small_lilly", [[1, 6]], undefined, 0, undefined);
 const lilly = new Voxel("lilly", [[1, 7]], undefined, 0, undefined);
+const lotus = new Voxel("lotus", [[3, 6]], undefined, 0, undefined);
 const cornFlower = new Voxel("corn_flower", [[2, 6]], undefined, 0, undefined);
 const poppy = new Voxel("poppy", [[2, 7]], undefined, 0, undefined);
 const daisy = new Voxel("daisy", [[3, 7]], undefined, 0, undefined);
@@ -42,6 +43,7 @@ const plains = new Biome(10, 20, noise, plainsNoise)
 
 plains.addVoxel(sand, 1, true, 0, 0, true, -1, -1)
 plains.addVoxel(sand, 1, true, 0, 3, false, 0, 1)
+plains.addVoxel(smallLilly, 0.02, true, 3, 3, true, 1, 1, 3)
 plains.addVoxel(lilly, 0.01, true, 3, 3, true, 1, 1, 2)
 plains.addVoxel(smallLilly, 0.04, true, 3, 3, true, 1, 1, 1)
 plains.addVoxel(dirt, 1, false, 0, 50, false, -1, -1)
@@ -166,7 +168,7 @@ function climate(x, y) {
     return [temp, humid];
 }
 
-const textureSource = 'https://cdn.jsdelivr.net/gh/maher14879/IsoArcade@main/assets/texture_sheet.png';
+const textureSource = assets/texture_sheet.png //'https://cdn.jsdelivr.net/gh/maher14879/IsoArcade@main/assets/texture_sheet.png';
 const structureIdArray = [
     "small_tree",
     "tree"

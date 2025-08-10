@@ -4,8 +4,16 @@
     <style>
       html, body {
         overflow: hidden;
+        margin: 0; padding: 0;
+        height: 100%;
+      }
+      #isoarcade {
+        position: relative;
+        z-index: 1;
+        display: block;
       }
     </style>
+  </head>
   <body>
     <canvas id="isoarcade"></canvas>
     <script>
@@ -14,7 +22,7 @@
       canvas.height = window.innerHeight;
     </script>
     <script type="module">
-      import './game.js';
+      import './isoarcade.js';
       window.addEventListener('contextmenu', e => e.preventDefault());
     </script>
   </body>
