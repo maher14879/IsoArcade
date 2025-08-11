@@ -13,14 +13,14 @@ class Arcade {
         // Preset values
         this.maxLight = 16;
         this.sunLuminosity = 3;
-        this.sunSelfLuminosity = 4;
+        this.sunSelfLuminosity = 5;
         this.sunAxis = "z";
         this.sunDirection = -1;
         this.attenuation = 2;
         this.fogScale = 200;
         this.chunkSize = 4; //root of actual size
         this.direction = {x: 1, y: 1, z: 1}
-        this.renderDistance = 4;
+        this.renderDistance = 7;
         this.worldHeight = 64;
         this.minLight = 6;
         this.taskPerSecond = 5;
@@ -56,6 +56,7 @@ class Arcade {
         this.structures = new Map();
         this.isMoving = false;
         this.particles = new Map();
+        this.guiElements = [];
     }
 
     async init(initialCapacity = 10000) {
@@ -186,12 +187,11 @@ class Arcade {
         await Promise.all(promises)
     }
 
-    async loadStructure(id) {
-        const filePath = `https://cdn.jsdelivr.net/gh/maher14879/IsoArcade@main/structures/${id}.bin`;
+    async loadStructure(filePath) {
         const response = await fetch(filePath);
         const buffer = await response.arrayBuffer();
         const view = new DataView(buffer);
-        this.structures.set(id, view);
+        this.structures.set(filePath, view);
     }
 
     placeStructure(id, x, y, z) {
@@ -663,8 +663,6 @@ class Arcade {
 
     draw() {
         this.begin()
-
-        let drawCount = 0;
         const w = this.width;
         const h = this.height;
         const o = this.offset
@@ -693,14 +691,13 @@ class Arcade {
             const light = this.getLight(x, y, z) || baseLight;
             const texture = this.textureArray[voxel];
             if (texture.length > 2) {
-                for (const [axis, index] of [['x', 0], ['y', 1], ['z', 2]]) {
+                for (const [axis, textureIndex] of [['x', 0], ['y', 1], ['z', 2]]) {
                     const direction = this.direction[axis];
-                    const [ix, iy] = texture[index];
+                    const [ix, iy] = texture[textureIndex];
                     const sx = ix * sw;
                     const sy = iy * sh;
                     const brightness = Math.min(1, Math.max(minLight, light[axis][direction]) / maxLight);
-                    this.drawImage(isoX, isoY, sx, sy, w, h, brightness, fog)
-                    drawCount++;
+                    this.drawImage(isoX, isoY, sx, sy, w, h, brightness, fog);
                 }
             } else {
                 const [ix, iy] = texture;
@@ -713,7 +710,6 @@ class Arcade {
                 );
                 const brightness = Math.min(1, Math.max(minLight, maxLuminosity) / maxLight);
                 this.drawImage(isoX, isoY, sx, sy, w, h, brightness, fog);
-                drawCount++;
             }
             const particle = this.getParticle(x, y, z)
             if (!particle) {continue};
@@ -729,6 +725,32 @@ class Arcade {
             const brightness = Math.min(1, Math.max(minLight, maxLuminosity) / maxLight);
             this.drawImage(isoX + xOffset, isoY + yOffset, sx, sy, w, h, brightness, fog);
         }
+
+        for (const [GUItexture, index, isoX, isoY] of this.guiElements) {
+            if (GUItexture == 0 && index == 0) {continue};
+            if (GUItexture) {
+                const [ix, iy] = GUItexture;
+                const sx = ix * sw;
+                const sy = iy * sh;
+                this.drawImage(isoX, isoY, sx, sy, w, h, 1, 0);
+                continue;
+            }
+            const texture = this.textureArray[index];
+            if (texture.length > 2) {
+                for (const [axis, textureIndex] of [['x', 0], ['y', 1], ['z', 2]]) {
+                    const [ix, iy] = texture[textureIndex];
+                    const sx = ix * sw;
+                    const sy = iy * sh;
+                    this.drawImage(isoX, isoY, sx, sy, w, h, 1, 0);
+                }
+            } else {
+                const [ix, iy] = texture;
+                const sx = ix * sw;
+                const sy = iy * sh;
+                this.drawImage(isoX, isoY, sx, sy, w, h, 1, 0);
+            }
+        }
+
         this.end();
     }
 
@@ -740,14 +762,23 @@ class Arcade {
 
     async updateChunks() {
         const [cxCam, cyCam] = this.roundChunk(this.cameraDestination.x, this.cameraDestination.y);
-        for (let cx = -this.renderDistance + cxCam - 1; cx < this.renderDistance + cxCam + 1; cx++) {
-            for (let cy = -this.renderDistance + cyCam - 1; cy < this.renderDistance + cyCam + 1; cy++) {
+        let x = 0;
+        let y = 0;
+        for (let i = 0; i < 4 * (this.renderDistance - 1) + 3; i++) {
+            const orientation = i % 4;
+            for (let j = 0; j < i >> 1; j++) {            
+                const cx = x + cxCam;
+                const cy = y + cyCam;
                 if (this.getChunkLoadState(cx, cy) == 0) {
                     this.SetChunkLoadState(cx, cy, 1);
                     this.sorted = false;
                     await this.initChunk(cx, cy);
                     return;
                 }
+                if (orientation == 0) {x++}
+                else if (orientation == 1) {y++}
+                else if (orientation == 2) {x--}
+                else {y--}
             }
         }
         if (!this.sorted) {
@@ -755,8 +786,8 @@ class Arcade {
             this.sorted = true;
             return;
         }
-        let x = 0;
-        let y = 0;
+        x = 0;
+        y = 0;
         for (let i = 0; i < 4 * (this.renderDistance - 1) + 3; i++) {
             const orientation = i % 4;
             for (let j = 0; j < i >> 1; j++) {            
@@ -904,7 +935,7 @@ class Arcade {
         }
         await Promise.all(promises);
         promises.length = 0;
-        if (voxel) {
+        if (voxel !== false) {
             await this.setVoxel(px, py, pz, voxel);
             const [luminosity, axis, direction, selfLuminosity] = this.luminosityArray[voxel];
             if (luminosity != 0) {
@@ -912,10 +943,12 @@ class Arcade {
             }
         } else {
             const deletedVoxel = this.getVoxel(px, py, pz)
-            await this.deleteVoxel(px, py, pz);
-            const [luminosity, axis, direction, selfLuminosity] = this.luminosityArray[deletedVoxel];
-            if (luminosity != 0) {
-                promises.push(this.propagateLight(px, py, pz, luminosity, axis, direction, selfLuminosity, true));
+            if (deletedVoxel) {
+                await this.deleteVoxel(px, py, pz);
+                const [luminosity, axis, direction, selfLuminosity] = this.luminosityArray[deletedVoxel];
+                if (luminosity != 0) {
+                    promises.push(this.propagateLight(px, py, pz, luminosity, axis, direction, selfLuminosity, true));
+            }
             }
         }
         await Promise.all(promises);
@@ -1111,7 +1144,8 @@ class Game {
         this.ticksPerSecond = 10;
         this.threshold = 0.3;
         this.biomeBlending = 10;
-        this.particleHashSpeed = 0.00001;
+        this.particleHashSpeed = 0.001;
+        this.inHandPosition = {x: 16, y: 16};
 
         //data
         this.position = {x: 0, y: 0};
@@ -1120,6 +1154,8 @@ class Game {
         this.tickCount = 0;
         this.nameIndexArray = [];
         this.particleArray = [];
+        this.inHandTexture = 0;
+        this.loadWorldTexture = 0;
 
         //calculated
         this.tickTime = 1 / this.ticksPerSecond;
@@ -1161,26 +1197,36 @@ class Game {
         this.textureSheet.src = this.src;
         await this.arcade.setTexture(this.textureSheet);
 
+        this.arcade.guiElements[0] = [this.inHandBackgroundTexture, 0, this.inHandPosition.x, this.inHandPosition.y];
+        this.arcade.guiElements[1] = [this.inHandTexture, 0, this.inHandPosition.x, this.inHandPosition.x];
+        this.arcade.guiElements[2] = [
+            this.loadWorldTexture,
+            0, 
+            (this.arcade.canvas.width / 2) - (this.arcade.width / 2), 
+            (this.arcade.canvas.height / 2) - (this.arcade.height / 2)
+        ];
+
         this.gameLoop = this.gameLoop.bind(this);
     }
 
-    async loadWorld(renderDistance) {
+    async loadWorld(renderDistance = (this.arcade.renderDistance + 1)) {
         const chunkPromises = [];
-        for (let cx = -(1 + renderDistance); cx <= (1 + renderDistance); cx++) {
-            for (let cy = -(1 + renderDistance); cy <= (1 + renderDistance); cy++) {
+        for (let cx = -renderDistance; cx <= renderDistance; cx++) {
+            for (let cy = -renderDistance; cy <= renderDistance; cy++) {
                 chunkPromises.push(this.arcade.initChunk(cx, cy));
             }
         }
-        await Promise.all(chunkPromises)
+        await Promise.all(chunkPromises);
+
         const lightPromises = [];
         for (let cx = -renderDistance; cx <= renderDistance; cx++) {
             for (let cy = -renderDistance; cy <= renderDistance; cy++) {
                 lightPromises.push(this.arcade.chunkLight(cx, cy));
             }
         }
-        await Promise.all(lightPromises)
-        window.dispatchEvent(new Event('loadWorldDone'));
-
+        await Promise.all(lightPromises);
+        this.arcade.guiElements[2] = [0, 0, 0, 0];
+        //window.dispatchEvent(new Event('loadWorldDone'));
     }
 
     async taskLoop() {
@@ -1190,7 +1236,7 @@ class Game {
             const now = performance.now();
             if (now - lastTask >= taskTestInterval) {
                 lastTask = now;
-                await this.arcade.task();
+                this.arcade.task()
             }
             await new Promise(r => setTimeout(r, 0));
         }
@@ -1225,12 +1271,15 @@ class Game {
         this.arcade.sortVoxels();
     }
 
-    destroy() {
+    interactVoxel() {
+        if (this.inHand != null) {return};
         const hoverVoxel = this.arcade.getHoveredVoxel(this.position.x, this.position.y);
         if (!hoverVoxel) {return};
         const [x, y, z, axis] = hoverVoxel;
+        const index = this.arcade.getVoxel(x, y, z)
+        this.inHand = this.voxels.get(this.nameIndexArray[index]);
+        this.arcade.guiElements[1] = [0, index, this.inHandPosition.x, this.inHandPosition.x];
         this.arcade.enqueuedVoxel = [x, y, z, false];
-        console.log("Voxel destroyed", x, y, z)
     }
 
     async move() {
@@ -1242,13 +1291,16 @@ class Game {
         this.arcade.isMoving = true;
     }
 
-    interact() {
+    interactItem() {
+        if (this.inHand == null) {return};
         const hoverVoxel = this.arcade.getHoveredVoxel(this.position.x, this.position.y);
         if (!hoverVoxel) {return};
         const [x, y, z, axis] = hoverVoxel;
         if (axis == 0) {this.arcade.enqueuedVoxel = [x + this.arcade.direction.x, y, z, this.inHand.index]}
         else if (axis == 1) {this.arcade.enqueuedVoxel = [x, y + this.arcade.direction.y, z, this.inHand.index]}
         else if (axis == 2) {this.arcade.enqueuedVoxel = [x, y, z + this.arcade.direction.z, this.inHand.index]};
+        this.inHand = null;
+        this.arcade.guiElements[1] = [this.inHandTexture, 0, this.inHandPosition.x, this.inHandPosition.x];
     }
 
     fastHash(x, y, z) {
@@ -1268,15 +1320,16 @@ class Game {
     }
 
     hashRandomDirection(x, y, z, age, scale) {
-        if (scale == 0) {return [0, 0, 0]};
+        if (scale == 0) return [0, 0, 0];
         const seed = x * 374761393 + y * 668265263 + z * 2147483647;
         const t = age * this.particleHashSpeed;
         return [
-            (Math.sin(seed + t * 12.9898) * 43758.5453 % 1 + 1) % 1 * scale,
-            (Math.sin(seed + t * 78.233) * 43758.5453 % 1 + 1) % 1 * scale,
-            (Math.sin(seed + t * 37.719) * 43758.5453 % 1 + 1) % 1 * scale
+            (Math.sin(seed * 0.1 + t * 12.9898) * 0.5 + 0.5) * scale,
+            (Math.sin(seed * 0.2 + t * 78.233) * 0.5 + 0.5) * scale,
+            (Math.sin(seed * 0.3 + t * 37.719) * 0.5 + 0.5) * scale
         ];
     }
+
 
     tick(dt) {
         this.timeSinceTick += dt;
@@ -1442,17 +1495,17 @@ const mossyStone = new Voxel("mossy_stone", [[[3,4], [3, 5], [3,3]]], undefined,
 const sand = new Voxel("sand", [[[3,1], [3, 2], [3,0]]], undefined, undefined, undefined);
 const wood = new Voxel("wood", [[[2,1], [2, 2], [2,0]]], undefined, undefined, undefined);
 const water = new Voxel("water", [[0, 1]], undefined, 2, undefined);
-const leaves = new Voxel("leaves", [[0, 0]], undefined, 1, undefined, 1000, leaf);
-const lamp = new Voxel("lamp", [[0, 2]], undefined, 10, [16, 4, 0, 0]);
-const root = new Voxel("root", [[0, 3]], undefined, 0, undefined);
-const grass = new Voxel("grass", [[0, 4]], undefined, 0, undefined);
-const plant = new Voxel("plant", [[0, 5], [0, 6], [0, 7]], 4, 0, undefined, 1000, wasp);
-const smallLilly = new Voxel("small_lilly", [[1, 6]], undefined, 0, undefined);
-const lilly = new Voxel("lilly", [[1, 7]], undefined, 0, undefined, 1000, butterfly);
-const lotus = new Voxel("lotus", [[3, 6]], undefined, 0, undefined);
-const cornFlower = new Voxel("corn_flower", [[2, 6]], undefined, 0, undefined);
-const poppy = new Voxel("poppy", [[2, 7]], undefined, 0, undefined);
-const daisy = new Voxel("daisy", [[3, 7]], undefined, 0, undefined);
+const leaves = new Voxel("leaves", [[0, 0]], undefined, 1, undefined, 2000, leaf);
+const lamp = new Voxel("lamp", [[0, 2]], undefined, 4, [16, 4, 0, 0]);
+const root = new Voxel("root", [[0, 3]], undefined, 2, undefined);
+const grass = new Voxel("grass", [[0, 4]], undefined, 2, undefined);
+const plant = new Voxel("plant", [[0, 5], [0, 6], [0, 7]], 4, 2, undefined, 1000, wasp);
+const smallLilly = new Voxel("small_lilly", [[1, 6]], undefined, 2, undefined);
+const lilly = new Voxel("lilly", [[1, 7]], undefined, 4, undefined, 1000, butterfly);
+const lotus = new Voxel("lotus", [[3, 6]], undefined, 4, undefined);
+const cornFlower = new Voxel("corn_flower", [[2, 6]], undefined, 2, undefined);
+const poppy = new Voxel("poppy", [[2, 7]], undefined, 2, undefined);
+const daisy = new Voxel("daisy", [[3, 7]], undefined, 2, undefined);
 const voxels = [dirt, grassDirt, stone, mossyStone, sand, wood, water, leaves, lamp, root, grass, plant, smallLilly, lilly, lotus, cornFlower, poppy, daisy];
 
 function noise(x, y, z) {
@@ -1487,8 +1540,8 @@ plains.addVoxel(grass, 0.3, true, 5, 50, true, 1, 1)
 plains.addVoxel(cornFlower, 0.01, true, 5, 50, true, 1, 1)
 plains.addVoxel(daisy, 0.01, true, 5, 50, true, 1, 1)
 plains.addVoxel(water, 1, false, 0, 2, true, -1, -1)
-plains.addStructure("small_tree", 0.0005, 0, 7, grassDirt)
-plains.addStructure("tree", 0.0002, 7, 50, grassDirt)
+plains.addStructure("structures/small_tree.bin", 0.0005, 0, 7, grassDirt)
+plains.addStructure("structures/tree.bin", 0.0002, 7, 50, grassDirt)
 
 function desertNoise(x, y) {
     let h = 0;
@@ -1603,38 +1656,55 @@ function climate(x, y) {
     return [temp, humid];
 }
 
-const textureSource = 'assets/texture_sheet.png' //'https://cdn.jsdelivr.net/gh/maher14879/IsoArcade@main/assets/texture_sheet.png';
+const textureSource = 'assets/texture_sheet.png'
 const structureIdArray = [
-    "small_tree",
-    "tree"
+    "structures/small_tree.bin",
+    "structures/tree.bin"
 ];
 
-const game = new Game(voxels, particles, biomes, climate, 4, 16, 16, textureSource, structureIdArray);
+const game = new Game(voxels, particles, [], climate, 4, 16, 16, textureSource, structureIdArray);
+game.inHandBackgroundTexture = [5, 4];
+game.inHandTexture = [6, 4];
+game.loadWorldTexture = [7, 4];
 
 await game.init("test_world");
-await game.loadWorld(3);
-game.taskLoop();
 requestAnimationFrame(game.gameLoop);
-
+await game.loadWorld();
+game.taskLoop();
 window.addEventListener("keyup", (e) => {
     if (e.key === 'q') game.rotateLeft();
     if (e.key === 'e') game.rotateRight();
     if (e.key === 'z') game.rotateFlip();
 
     //testing
-    if (e.key === '1') game.inHand = lamp;
-    if (e.key === '2') game.inHand = leaves;
-    if (e.key === '3') game.inHand = wood;
+    if (e.key === '1') {
+        game.inHand = game.voxels.get("lamp")
+        game.arcade.guiElements[1] = [0, game.voxels.get("lamp").index, game.inHandPosition.x, game.inHandPosition.y]
+    };
+
+    if (e.key === '2') {
+        game.inHand = game.voxels.get("wood")
+        game.arcade.guiElements[1] = [0, game.voxels.get("wood").index, game.inHandPosition.x, game.inHandPosition.y]
+    };
+
+    if (e.key === '3') {
+        game.inHand = game.voxels.get("leaves")
+        game.arcade.guiElements[1] = [0, game.voxels.get("leaves").index, game.inHandPosition.x, game.inHandPosition.y]
+    };
+
+    if (e.key === '0') {
+        game.inHand = null;
+        game.arcade.guiElements[1] = [game.inHandTexture, 0, game.inHandPosition.x, game.inHandPosition.y]
+    };
     
     //debug
+    if (e.key === 'i') {
+        game.arcade.enqueuedVoxel = [8, 8, 0, 0]
+    }
+
     if (e.key === 'p') {
         game.arcade.exportChunks()
         console.log("exportChunks")
-    }
-
-    if (e.key === 's') {
-        game.arcade.saveChunks()
-        console.log("saveChunks")
     }
 
     if (e.key === 'c') {
@@ -1662,9 +1732,9 @@ document.addEventListener('mousemove', function (e) {
 });
 
 window.addEventListener("mousedown", (e) => {
-    if (e.button == 0) {game.destroy()};
+    if (e.button == 0) {game.interactVoxel()};
     if (e.button == 1) {game.move()};
-    if (e.button == 2) {game.interact()};
+    if (e.button == 2) {game.interactItem()};
 });
 
 window.addEventListener("beforeunload", (e) => {
